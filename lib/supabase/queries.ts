@@ -1,199 +1,270 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-'use server'
-
-import { createClient } from './server'
-import { revalidatePath } from 'next/cache'
-import { redirect } from 'next/navigation'
+import { SupabaseClient } from '@supabase/supabase-js'
 import { Database } from './database.types'
 
-type Conversation = Database['public']['Tables']['conversations']['Row']
-type Message = Database['public']['Tables']['messages']['Row']
+export type DBConversation = Database['public']['Tables']['conversations']['Row']
+export type DBMessage = Database['public']['Tables']['messages']['Row']
 
-export async function createConversation() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  
-  if (!user) {
-    throw new Error('Unauthorized')
+/**
+ * Ensures the user has an active workspace ID.
+ * Falls back to creating one if missing.
+ */
+export async function getOrCreateUserWorkspace(
+  supabase: SupabaseClient<Database>,
+  userId: string,
+  userEmail: string
+): Promise<string> {
+  // 1. Check workspace_members
+  const { data: member } = await supabase
+    .from('workspace_members')
+    .select('workspace_id')
+    .eq('user_id', userId)
+    .limit(1)
+    .maybeSingle()
+
+  if (member?.workspace_id) {
+    return member.workspace_id
   }
 
-  const { data: rawData, error } = await (supabase as any)
-    .from('conversations')
+  // 2. Check workspaces owned by user
+  const { data: owned } = await supabase
+    .from('workspaces')
+    .select('id')
+    .eq('owner_id', userId)
+    .limit(1)
+    .maybeSingle()
+
+  if (owned?.id) {
+    await supabase.from('workspace_members').upsert({
+      workspace_id: owned.id,
+      user_id: userId,
+      role: 'owner',
+    }, { onConflict: 'workspace_id,user_id' })
+    return owned.id
+  }
+
+  // 3. Create default personal workspace
+  const slug = `personal-${userId.slice(0, 8)}`
+  const displayName = userEmail.split('@')[0] || 'Personal'
+  
+  const { data: newWs, error } = await supabase
+    .from('workspaces')
     .insert({
-      user_id: user.id,
-      title: 'New Conversation',
+      owner_id: userId,
+      name: `${displayName}'s Workspace`,
+      slug,
     })
-    .select()
+    .select('id')
     .single()
 
-  if (error) {
-    throw new Error(error.message)
+  if (error || !newWs) {
+    // Retry with random suffix in case of slug collision
+    const altSlug = `personal-${userId.slice(0, 8)}-${Date.now().toString().slice(-4)}`
+    const { data: retryWs } = await supabase
+      .from('workspaces')
+      .insert({
+        owner_id: userId,
+        name: `${displayName}'s Workspace`,
+        slug: altSlug,
+      })
+      .select('id')
+      .single()
+
+    if (retryWs) {
+      await supabase.from('workspace_members').upsert({
+        workspace_id: retryWs.id,
+        user_id: userId,
+        role: 'owner',
+      }, { onConflict: 'workspace_id,user_id' })
+      return retryWs.id
+    }
+    throw new Error('Could not provision workspace for user.')
   }
 
-  revalidatePath('/chat')
-  redirect(`/chat/${(rawData as Conversation).id}`)
+  await supabase.from('workspace_members').upsert({
+    workspace_id: newWs.id,
+    user_id: userId,
+    role: 'owner',
+  }, { onConflict: 'workspace_id,user_id' })
+
+  return newWs.id
 }
 
-export async function getConversations(): Promise<Conversation[]> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  
-  if (!user) return []
-
-  const { data: rawData, error } = await (supabase as any)
+/**
+ * Fetch all conversations accessible to the current user, ordered by updated_at descending.
+ */
+export async function fetchUserConversations(
+  supabase: SupabaseClient<Database>
+): Promise<DBConversation[]> {
+  const { data, error } = await supabase
     .from('conversations')
     .select('*')
-    .eq('user_id', user.id)
     .order('updated_at', { ascending: false })
 
   if (error) {
-    throw new Error(error.message)
+    console.error('Error fetching conversations:', error.message)
+    return []
   }
 
-  return rawData as Conversation[]
+  return data || []
 }
 
-export async function getMessages(conversationId: string): Promise<Message[]> {
-  const supabase = await createClient()
-  
-  // RLS will ensure user only sees messages for their own conversations
-  const { data: rawData, error } = await (supabase as any)
+/**
+ * Fetch all messages in a conversation ordered chronologically.
+ */
+export async function fetchConversationMessages(
+  supabase: SupabaseClient<Database>,
+  conversationId: string
+): Promise<DBMessage[]> {
+  const { data, error } = await supabase
     .from('messages')
     .select('*')
     .eq('conversation_id', conversationId)
     .order('created_at', { ascending: true })
 
   if (error) {
-    throw new Error(error.message)
+    console.error('Error fetching messages:', error.message)
+    return []
   }
 
-  return rawData as Message[]
+  return data || []
 }
 
-export async function saveMessage(
-  conversationId: string, 
-  role: 'user' | 'assistant' | 'system', 
-  content: string,
-  clientMessageId?: string,
-  metadata?: Database['public']['Tables']['messages']['Row']['metadata']
-): Promise<Message> {
-  const supabase = await createClient()
-  
-  if (clientMessageId) {
-    const { data: existingMessage } = await (supabase as any)
-      .from('messages')
-      .select('*')
-      .eq('client_message_id', clientMessageId)
-      .maybeSingle()
+/**
+ * Create a new conversation row in Supabase.
+ */
+export async function createSupabaseConversation(
+  supabase: SupabaseClient<Database>,
+  title: string = 'New Chat',
+  model: string = 'chatINALabs AI'
+): Promise<DBConversation | null> {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return null
 
-    if (existingMessage) {
-      return existingMessage as Message
-    }
-  }
+  const workspaceId = await getOrCreateUserWorkspace(supabase, user.id, user.email || '')
 
-  const { data: rawData, error } = await (supabase as any)
-    .from('messages')
+  const { data, error } = await supabase
+    .from('conversations')
     .insert({
-      conversation_id: conversationId,
-      role,
-      content,
-      client_message_id: clientMessageId || null,
-      metadata: metadata || null
+      workspace_id: workspaceId,
+      user_id: user.id,
+      title: title.trim() || 'New Chat',
+      model: model || 'chatINALabs AI',
     })
     .select()
     .single()
 
   if (error) {
-    throw new Error(error.message)
+    console.error('Error creating conversation:', error.message)
+    return null
   }
 
-  // Touch the updated_at timestamp on the conversation
-  await (supabase as any)
-    .from('conversations')
-    .update({ updated_at: new Date().toISOString() })
-    .eq('id', conversationId)
-
-  revalidatePath(`/chat/${conversationId}`)
-  revalidatePath('/chat')
-  
-  return rawData as Message
+  return data
 }
 
-export async function renameConversation(conversationId: string, newTitle: string): Promise<void> {
-  const title = newTitle.trim().substring(0, 100)
-  if (!title) throw new Error("Title cannot be empty")
-  
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error("Unauthorized")
-
-  const { error } = await (supabase as any)
-    .from('conversations')
-    .update({ title, updated_at: new Date().toISOString() })
-    .eq('id', conversationId)
-    .eq('user_id', user.id)
-
-  if (error) throw new Error(error.message)
-  
-  revalidatePath('/chat')
-}
-
-export async function deleteConversation(conversationId: string): Promise<void> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error("Unauthorized")
-
-  // Hard delete for MVP
-  const { error } = await (supabase as any)
-    .from('conversations')
-    .delete()
-    .eq('id', conversationId)
-    .eq('user_id', user.id)
-
-  if (error) throw new Error(error.message)
-  
-  revalidatePath('/chat')
-}
-
-export async function truncateConversationFrom(conversationId: string, messageId: string): Promise<void> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error("Unauthorized")
-
-  // Verify ownership
-  const { data: conv } = await (supabase as any)
-    .from('conversations')
-    .select('id')
-    .eq('id', conversationId)
-    .eq('user_id', user.id)
+/**
+ * Insert a message into the messages table and update the parent conversation's updated_at timestamp.
+ */
+export async function saveSupabaseMessage(
+  supabase: SupabaseClient<Database>,
+  conversationId: string,
+  role: 'user' | 'assistant' | 'system',
+  content: string,
+  model?: string | null,
+  metadata?: Record<string, unknown>
+): Promise<DBMessage | null> {
+  const { data, error } = await supabase
+    .from('messages')
+    .insert({
+      conversation_id: conversationId,
+      role,
+      content,
+      model: model || null,
+      metadata: (metadata as Database['public']['Tables']['messages']['Insert']['metadata']) || {},
+    })
+    .select()
     .single()
 
-  if (!conv) throw new Error("Conversation not found or unauthorized")
-
-  // Find the created_at of the target message
-  const { data: targetMessage, error: findError } = await (supabase as any)
-    .from('messages')
-    .select('created_at')
-    .eq('id', messageId)
-    .eq('conversation_id', conversationId)
-    .single()
-
-  if (findError || !targetMessage) throw new Error("Target message not found")
-
-  // Delete all messages created at or after the target message
-  const { error: delError } = await (supabase as any)
-    .from('messages')
-    .delete()
-    .eq('conversation_id', conversationId)
-    .gte('created_at', targetMessage.created_at)
-
-  if (delError) throw new Error(delError.message)
+  if (error) {
+    console.error('Error saving message:', error.message)
+    return null
+  }
 
   // Update conversation updated_at
-  await (supabase as any)
+  await supabase
     .from('conversations')
     .update({ updated_at: new Date().toISOString() })
     .eq('id', conversationId)
 
-  revalidatePath(`/chat/${conversationId}`)
+  return data
 }
+
+/**
+ * Update conversation title or model.
+ */
+export async function updateSupabaseConversation(
+  supabase: SupabaseClient<Database>,
+  conversationId: string,
+  updates: { title?: string; model?: string }
+): Promise<boolean> {
+  const { error } = await supabase
+    .from('conversations')
+    .update({
+      ...updates,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', conversationId)
+
+  if (error) {
+    console.error('Error updating conversation:', error.message)
+    return false
+  }
+
+  return true
+}
+
+/**
+ * Delete a conversation from Supabase (cascades to messages).
+ */
+export async function deleteSupabaseConversation(
+  supabase: SupabaseClient<Database>,
+  conversationId: string
+): Promise<boolean> {
+  const { error } = await supabase
+    .from('conversations')
+    .delete()
+    .eq('id', conversationId)
+
+  if (error) {
+    console.error('Error deleting conversation:', error.message)
+    return false
+  }
+
+  return true
+}
+
+/**
+ * Update message feedback in metadata.
+ */
+export async function updateMessageFeedback(
+  supabase: SupabaseClient<Database>,
+  messageId: string,
+  feedback: 'like' | 'dislike' | null
+): Promise<boolean> {
+  const { data: existing } = await supabase
+    .from('messages')
+    .select('metadata')
+    .eq('id', messageId)
+    .single()
+
+  const currentMeta = (existing?.metadata as Record<string, unknown>) || {}
+  const updatedMeta = { ...currentMeta, feedback }
+
+  const { error } = await supabase
+    .from('messages')
+    .update({ metadata: updatedMeta })
+    .eq('id', messageId)
+
+  return !error
+}
+
+

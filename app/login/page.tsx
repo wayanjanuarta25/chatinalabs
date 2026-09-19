@@ -1,5 +1,7 @@
 import Link from 'next/link'
+import Image from 'next/image'
 import { login } from './actions'
+import { AlertCircle, ArrowRight } from 'lucide-react'
 
 export default async function LoginPage({
   searchParams,
@@ -9,50 +11,98 @@ export default async function LoginPage({
   const { message } = await searchParams
 
   return (
-    <div className="flex-1 flex flex-col w-full px-8 sm:max-w-md justify-center gap-2 mx-auto min-h-screen">
-      <form className="flex-1 flex flex-col w-full justify-center gap-2 text-foreground" action={login}>
-        <div className="mb-8 flex flex-col items-center">
-          <h1 className="text-3xl font-semibold mb-2">chatINALabs</h1>
-          <p className="text-sm text-muted-foreground">Sign in to your account</p>
-        </div>
-        
-        <label className="text-md" htmlFor="email">
-          Email
-        </label>
-        <input
-          className="rounded-md px-4 py-2 bg-inherit border mb-6"
-          name="email"
-          placeholder="you@example.com"
-          required
-        />
-        <label className="text-md" htmlFor="password">
-          Password
-        </label>
-        <input
-          className="rounded-md px-4 py-2 bg-inherit border mb-6"
-          type="password"
-          name="password"
-          placeholder="••••••••"
-          required
-        />
-        
-        <button className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-md px-4 py-2 text-foreground mb-2">
-          Sign In
-        </button>
-        
-        {message && (
-          <p className="mt-4 p-4 bg-red-900/50 text-red-300 text-center rounded-md">
-            {message}
+    <div className="flex min-h-screen flex-col items-center justify-center bg-[#f7f7f8] px-4 py-12 dark:bg-[#121212] sm:px-6">
+      <div className="w-full max-w-sm">
+        {/* Brand Header */}
+        <div className="mb-8 flex flex-col items-center text-center">
+          <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-2xl bg-white p-1.5 shadow-sm dark:bg-zinc-800">
+            <Image
+              src="/logo-ci.png"
+              alt="chatINALabs"
+              width={32}
+              height={32}
+              className="object-contain"
+              priority
+            />
+          </div>
+          <h1 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 sm:text-2xl">
+            Welcome back
+          </h1>
+          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+            Sign in to chatINALabs AI to continue
           </p>
+        </div>
+
+        {/* Error / Status Alert */}
+        {message && (
+          <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-red-200/80 bg-red-50 p-3 text-xs text-red-800 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
+            <AlertCircle size={16} className="shrink-0 text-red-500" />
+            <div className="leading-relaxed">{message}</div>
+          </div>
         )}
 
-        <div className="mt-4 text-center text-sm">
+        {/* Form Container */}
+        <div className="rounded-2xl border border-zinc-200/80 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-[#1a1a1a]">
+          <form action={login} className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
+              <label 
+                htmlFor="email" 
+                className="text-xs font-medium text-zinc-700 dark:text-zinc-300"
+              >
+                Email address
+              </label>
+              <input
+                id="email"
+                name="email"
+                type="email"
+                autoComplete="email"
+                placeholder="name@example.com"
+                required
+                className="w-full rounded-xl border border-zinc-300/80 bg-transparent px-3.5 py-2 text-sm text-zinc-900 outline-none transition-all placeholder:text-zinc-400 focus:border-zinc-500 focus:ring-2 focus:ring-zinc-400/20 dark:border-zinc-700 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between">
+                <label 
+                  htmlFor="password" 
+                  className="text-xs font-medium text-zinc-700 dark:text-zinc-300"
+                >
+                  Password
+                </label>
+              </div>
+              <input
+                id="password"
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                placeholder="••••••••"
+                required
+                className="w-full rounded-xl border border-zinc-300/80 bg-transparent px-3.5 py-2 text-sm text-zinc-900 outline-none transition-all placeholder:text-zinc-400 focus:border-zinc-500 focus:ring-2 focus:ring-zinc-400/20 dark:border-zinc-700 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
+              />
+            </div>
+
+            <button
+              type="submit"
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-900 py-2.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-black active:scale-[0.99] dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 cursor-pointer"
+            >
+              <span>Continue</span>
+              <ArrowRight size={14} />
+            </button>
+          </form>
+        </div>
+
+        {/* Footer Navigation */}
+        <div className="mt-5 text-center text-xs text-zinc-500 dark:text-zinc-400">
           Don&apos;t have an account?{' '}
-          <Link href="/register" className="text-emerald-500 hover:underline">
-            Register here
+          <Link 
+            href="/register" 
+            className="font-medium text-zinc-900 hover:underline dark:text-zinc-200"
+          >
+            Sign up
           </Link>
         </div>
-      </form>
+      </div>
     </div>
   )
 }

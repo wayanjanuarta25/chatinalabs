@@ -1,5 +1,5 @@
 export const AI_CONFIG = {
-  defaultModel: "gpt-4o-mini",
+  defaultModel: "gpt-5.6-sol",
   maxOutputTokens: 2048,
   temperature: 0.7,
 }
@@ -10,12 +10,12 @@ export function getModelConfig(modelId: string = AI_CONFIG.defaultModel) {
   
   if (isReasoningModel) {
     return {
-      maxTokens: AI_CONFIG.maxOutputTokens
+      maxOutputTokens: AI_CONFIG.maxOutputTokens
     }
   }
 
   return {
     temperature: AI_CONFIG.temperature,
-    maxTokens: AI_CONFIG.maxOutputTokens
+    maxOutputTokens: AI_CONFIG.maxOutputTokens
   }
 }

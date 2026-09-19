@@ -1,118 +1,204 @@
-import { streamText, generateText } from 'ai'
-import { openai } from '@/lib/openai'
-import { AI_CONFIG, getModelConfig } from '@/lib/ai/config'
-import { SYSTEM_PROMPT } from '@/ai/prompts/system'
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
-import { saveMessage } from '@/lib/supabase/queries'
-import { Database } from '@/lib/supabase/database.types'
+import { createClient } from '@/lib/supabase/server'
+import { 
+  fetchConversationMessages, 
+  saveSupabaseMessage, 
+  updateSupabaseConversation,
+  getOrCreateUserWorkspace
+} from '@/lib/supabase/queries'
+import { aiService, AIMessage, AIFinishReason } from '@/lib/ai'
+import { ragService, RAGSourceCitation } from '@/lib/knowledge/rag'
 
 export async function POST(req: Request) {
   try {
-    const { conversationId, content, clientMessageId } = await req.json()
-    
-    if (!conversationId || !content) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
-    }
-
     const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
 
-    if (!user) {
+    if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    const body = await req.json()
+    const conversationId = body.conversationId || body.conversation_id
+    const content = typeof body.content === 'string' ? body.content.trim() : undefined
+    const selectedModel = typeof body.model === 'string' && body.model ? body.model : 'chatinalabs-ai'
+    const incomingMessages: AIMessage[] = Array.isArray(body.messages) ? body.messages : []
+    const isKnowledgeEnabled = body.knowledgeMode !== false
+
+    if (!conversationId || typeof conversationId !== 'string') {
+      return NextResponse.json({ error: 'Missing or invalid conversationId' }, { status: 400 })
+    }
+
     // Verify conversation ownership
-    const { data: conversation, error: convoError } = await (supabase as any)
+    const { data: conversation, error: convoError } = await supabase
       .from('conversations')
-      .select('id, title')
+      .select('id, title, user_id, workspace_id')
       .eq('id', conversationId)
-      .eq('user_id', user.id)
       .single()
 
-    if (convoError || !conversation) {
+    if (convoError || !conversation || conversation.user_id !== user.id) {
       return NextResponse.json({ error: 'Conversation not found or unauthorized' }, { status: 404 })
     }
 
-    // 1. Save user message if provided (skips if regenerating)
+    // Resolve workspace ID for strict multi-tenant isolation
+    let workspaceId = conversation.workspace_id
+    if (!workspaceId) {
+      workspaceId = await getOrCreateUserWorkspace(supabase, user.id, user.email || '')
+    }
+
+    // 1. Save user message to database if new message content provided
     if (content) {
-      await saveMessage(conversationId, 'user', content, clientMessageId)
+      await saveSupabaseMessage(supabase, conversationId, 'user', content)
     }
 
-    // 2. Fetch previous messages
-    const { data: rawMessagesData, error: msgsError } = await (supabase as any)
-      .from('messages')
-      .select('role, content')
-      .eq('conversation_id', conversationId)
-      .order('created_at', { ascending: true })
-      
-    const messagesData = rawMessagesData as Database['public']['Tables']['messages']['Row'][]
-
-    if (msgsError) {
-      return NextResponse.json({ error: 'Failed to fetch conversation history' }, { status: 500 })
-    }
-
-    // 3. Context Windowing
-    // We enforce a safe context limit to prevent unbounded payloads
-    const MAX_CONTEXT_MESSAGES = 20;
-    const historyToKeep = messagesData.slice(-MAX_CONTEXT_MESSAGES);
-
-    const coreMessages = historyToKeep.map(msg => ({
-      role: msg.role as 'user' | 'assistant' | 'system',
-      content: msg.content
+    // 2. Fetch recent conversation history for context
+    const dbMessages = await fetchConversationMessages(supabase, conversationId)
+    const MAX_CONTEXT = 20
+    let contextMessages: AIMessage[] = dbMessages.slice(-MAX_CONTEXT).map(m => ({
+      role: m.role as 'system' | 'user' | 'assistant',
+      content: m.content,
     }))
 
-    // 4. Stream Response
-    const result = streamText({
-      model: openai(AI_CONFIG.defaultModel),
-      system: SYSTEM_PROMPT,
-      messages: coreMessages,
-      ...getModelConfig(AI_CONFIG.defaultModel),
-      async onFinish({ text, finishReason, usage }) {
-        try {
-          if (text.trim().length > 0) {
-            // A. Save Assistant Message with usage metadata
-            await saveMessage(
-              conversationId, 
-              'assistant', 
-              text, 
-              undefined, 
-              { 
-                finishReason, 
-                promptTokens: (usage as any)?.promptTokens || 0, 
-                completionTokens: (usage as any)?.completionTokens || 0, 
-                status: (finishReason as string) === 'abort' ? 'aborted' : 'completed' 
-              }
-            )
+    // Fallback if client passed raw messages array and db query returned empty
+    if (contextMessages.length === 0 && incomingMessages.length > 0) {
+      contextMessages = incomingMessages.slice(-MAX_CONTEXT)
+    }
 
-            // B. Background Auto-Title Generation
-            if (conversation.title === 'New Conversation') {
-              const titleResult = await generateText({
-                model: openai(AI_CONFIG.defaultModel),
-                system: "You are a concise title generator. Summarize the user's prompt in 3 to 7 words. Do not use quotes or periods.",
-                prompt: content,
-                temperature: 0.5,
-              })
-              
-              const newTitle = titleResult.text.trim().replace(/^["']|["']$/g, '');
-              
-              // We use the existing supabase client to update the title
-              await (supabase as any)
-                .from('conversations')
-                .update({ title: newTitle })
-                .eq('id', conversationId)
-            }
-          }
-        } catch (err) {
-          console.error("Error in onFinish background task:", err)
-        }
+    // Ensure there is at least one message to send to the provider
+    if (contextMessages.length === 0 && content) {
+      contextMessages = [{ role: 'user', content }]
+    }
+
+    // 3. RAG Layer: Retrieve knowledge from workspace documents and augment prompt
+    let ragSources: RAGSourceCitation[] = []
+    let hasKnowledge = false
+    let messagesToSend = contextMessages
+
+    if (isKnowledgeEnabled && content && workspaceId) {
+      const ragResult = await ragService.prepareRAGChat(supabase, {
+        workspaceId,
+        query: content,
+        history: contextMessages,
+        model: selectedModel,
+      })
+
+      if (ragResult.hasKnowledge) {
+        messagesToSend = ragResult.messages
+        ragSources = ragResult.sources
+        hasKnowledge = true
       }
+    }
+
+    // 4. Call AI provider stream through service layer
+    const stream = aiService.stream({
+      model: selectedModel,
+      messages: messagesToSend,
     })
 
-    return result.toTextStreamResponse()
-    
-  } catch (error: unknown) {
-    console.error('Chat API Error:', error)
+    // 4. Stream tokens to frontend and save final response on completion
+    let fullAssistantText = ''
+    let finishReason: AIFinishReason | undefined
+    let hasSavedAssistantMessage = false
+    const encoder = new TextEncoder()
+    const iterator = stream[Symbol.asyncIterator]()
+
+    const readableStream = new ReadableStream({
+      async pull(controller) {
+        try {
+          const { value, done } = await iterator.next()
+
+          if (done) {
+            controller.close()
+
+            // Save assistant final response
+            if (!hasSavedAssistantMessage && fullAssistantText.trim().length > 0) {
+              hasSavedAssistantMessage = true
+              await saveSupabaseMessage(
+                supabase,
+                conversationId,
+                'assistant',
+                fullAssistantText,
+                selectedModel,
+                { 
+                  finishReason: finishReason || 'stop', 
+                  status: 'completed',
+                  hasKnowledge,
+                  sources: ragSources,
+                }
+              )
+
+              // Background auto-title generation if new chat
+              if (conversation.title === 'New Chat' || conversation.title === 'New Conversation') {
+                try {
+                  const titleResp = await aiService.generate({
+                    model: selectedModel,
+                    messages: [
+                      {
+                        role: 'system',
+                        content: 'You are a concise title generator. Summarize the user message in 3 to 6 words. Do not use quotes, punctuation, or periods.',
+                      },
+                      {
+                        role: 'user',
+                        content: content || fullAssistantText.slice(0, 100),
+                      },
+                    ],
+                  })
+                  const cleanTitle = titleResp.content.trim().replace(/^["']|["']$/g, '')
+                  if (cleanTitle) {
+                    await updateSupabaseConversation(supabase, conversationId, { title: cleanTitle })
+                  }
+                } catch (titleErr) {
+                  console.warn('[AutoTitle] Generation failed:', titleErr)
+                }
+              }
+            }
+          } else if (value) {
+            if (value.delta) {
+              fullAssistantText += value.delta
+              controller.enqueue(encoder.encode(value.delta))
+            }
+            if (value.finishReason) {
+              finishReason = value.finishReason
+            }
+          }
+        } catch (streamErr) {
+          console.error('[API/Chat] Streaming pull error:', streamErr)
+          controller.error(streamErr)
+        }
+      },
+      async cancel() {
+        if (iterator.return) {
+          await iterator.return()
+        }
+        if (!hasSavedAssistantMessage && fullAssistantText.trim().length > 0) {
+          hasSavedAssistantMessage = true
+          try {
+            await saveSupabaseMessage(
+              supabase,
+              conversationId,
+              'assistant',
+              fullAssistantText,
+              selectedModel,
+              { status: 'aborted', hasKnowledge, sources: ragSources }
+            )
+          } catch (abortErr) {
+            console.error('[API/Chat] Error saving aborted assistant message:', abortErr)
+          }
+        }
+      },
+    })
+
+    return new Response(readableStream, {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Content-Type-Options': 'nosniff',
+        'X-Has-Knowledge': hasKnowledge ? 'true' : 'false',
+        'X-Sources-Count': String(ragSources.length),
+      },
+    })
+  } catch (error) {
+    console.error('[API/Chat] Handler error:', error)
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 })
   }
 }

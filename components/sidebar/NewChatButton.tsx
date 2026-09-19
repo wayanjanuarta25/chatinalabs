@@ -1,26 +1,34 @@
 'use client'
 
-import { useTransition } from 'react'
-import { Plus, Loader2 } from 'lucide-react'
-import { createConversation } from '@/lib/supabase/queries'
+import { SquarePen } from 'lucide-react'
+import { useChatStore } from '@/lib/store/useChatStore'
 
-export function NewChatButton() {
-  const [isPending, startTransition] = useTransition()
+interface NewChatButtonProps {
+  onClick?: () => void
+}
 
-  const handleNewChat = () => {
-    startTransition(async () => {
-      await createConversation()
-    })
+export function NewChatButton({ onClick }: NewChatButtonProps) {
+  const createNewChat = useChatStore(s => s.createNewChat)
+
+  const handleClick = () => {
+    createNewChat()
+    onClick?.()
   }
 
   return (
     <button 
-      onClick={handleNewChat}
-      disabled={isPending}
-      className="w-full flex items-center gap-2 bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-800 dark:text-zinc-200 rounded-lg px-4 py-3 text-sm font-medium transition-colors shadow-sm disabled:opacity-50"
+      type="button"
+      onClick={handleClick}
+      className="flex w-full items-center justify-between rounded-xl border border-transparent bg-white/60 px-2.5 py-1.5 text-[12px] font-medium text-zinc-800 transition-colors hover:bg-white hover:shadow-xs dark:bg-white/[0.04] dark:text-zinc-200 dark:hover:bg-white/[0.08] cursor-pointer"
+      title="Obrolan Baru"
     >
-      {isPending ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
-      New Conversation
+      <div className="flex items-center gap-2">
+        <SquarePen size={14} className="text-zinc-500 dark:text-zinc-400" />
+        <span>New Chat</span>
+      </div>
+      <kbd className="hidden rounded bg-zinc-200/60 px-1 py-0.5 text-[9px] font-medium text-zinc-400 dark:bg-white/[0.06] dark:text-zinc-500 sm:inline-block">
+        Ctrl+K
+      </kbd>
     </button>
   )
 }

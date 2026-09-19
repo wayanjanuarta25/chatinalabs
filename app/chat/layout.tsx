@@ -1,7 +1,7 @@
-import { Sidebar } from '@/components/sidebar/Sidebar'
-import { createClient } from '@/lib/supabase/server'
-import { getConversations } from '@/lib/supabase/queries'
 import { redirect } from 'next/navigation'
+import { Sidebar } from '@/components/sidebar/Sidebar'
+import { SidebarProvider } from '@/components/sidebar/SidebarContext'
+import { createClient } from '@/lib/supabase/server'
 
 export default async function ChatLayout({
   children,
@@ -11,21 +11,32 @@ export default async function ChatLayout({
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
+  // Protect chat route server-side
   if (!user) {
     redirect('/login')
   }
 
-  const conversations = await getConversations()
+  // Retrieve user profile data
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('email, full_name, avatar_url')
+    .eq('id', user.id)
+    .single()
+
+  const userEmail = profile?.email || user.email || 'user@chatinalabs.id'
+  const userFullName = profile?.full_name || (user.user_metadata?.full_name as string) || ''
 
   return (
-    <div className="flex h-screen w-full bg-white dark:bg-zinc-950 text-zinc-950 dark:text-white overflow-hidden">
-      {/* Sidebar - hidden on mobile by default, handled inside the component */}
-      <Sidebar userEmail={user.email || 'User'} initialConversations={conversations} />
-      
-      {/* Main Chat Area */}
-      <main className="flex-1 flex flex-col h-full min-w-0">
-        {children}
-      </main>
-    </div>
+    <SidebarProvider>
+      <div className="flex h-dvh w-full overflow-hidden bg-[#f7f7f7] text-[#212121] dark:bg-[#171717] dark:text-[#ececec]">
+        {/* Sidebar with dynamic authenticated user info */}
+        <Sidebar userEmail={userEmail} userFullName={userFullName} />
+        
+        {/* Main Chat Area */}
+        <main className="flex h-full min-w-0 flex-1 flex-col">
+          {children}
+        </main>
+      </div>
+    </SidebarProvider>
   )
 }

@@ -27,21 +27,31 @@ export async function updateSession(request: NextRequest) {
     }
   )
 
-  // refreshing the auth token
+  // Refreshing the auth token
   const {
     data: { user },
   } = await supabase.auth.getUser()
 
-  const isAuthRoute = request.nextUrl.pathname.startsWith('/login') || request.nextUrl.pathname.startsWith('/register')
-  const isProtected = request.nextUrl.pathname.startsWith('/chat')
+  const { pathname } = request.nextUrl
 
+  // Root redirect optimization
+  if (pathname === '/') {
+    const url = request.nextUrl.clone()
+    url.pathname = user ? '/chat' : '/login'
+    return NextResponse.redirect(url)
+  }
+
+  const isAuthRoute = pathname.startsWith('/login') || pathname.startsWith('/register')
+  const isProtected = pathname.startsWith('/chat') || pathname.startsWith('/knowledge')
+
+  // Protected route enforcement
   if (!user && isProtected) {
-    // no user, potentially respond by redirecting the user to the login page
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     return NextResponse.redirect(url)
   }
 
+  // Authenticated user trying to access login/register
   if (user && isAuthRoute) {
     const url = request.nextUrl.clone()
     url.pathname = '/chat'

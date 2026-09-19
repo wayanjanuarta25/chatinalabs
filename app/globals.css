@@ -1,26 +1,114 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f7f7f7;
+  --foreground: #212121;
+}
+
+.dark {
+  --background: #212121;
+  --foreground: #ececec;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-sans: var(--font-dm-sans);
+  --font-display: var(--font-manrope);
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-dm-sans), Arial, Helvetica, sans-serif;
+  letter-spacing: -0.01em;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+::selection {
+  background: rgb(255 255 255 / 0.2);
+}
+
+.font-display {
+  font-family: var(--font-manrope), var(--font-dm-sans), sans-serif;
+}
+
+.message-content > *:first-child {
+  margin-top: 0;
+}
+
+.message-content > *:last-child {
+  margin-bottom: 0;
+}
+
+.message-content p,
+.message-content ul,
+.message-content ol,
+.message-content blockquote {
+  margin-block: 0.8em;
+}
+
+.message-content h1,
+.message-content h2,
+.message-content h3 {
+  font-family: var(--font-manrope), var(--font-dm-sans), sans-serif;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  line-height: 1.25;
+  margin-block: 1.35em 0.55em;
+}
+
+.message-content h1 {
+  font-size: 1.55rem;
+}
+
+.message-content h2 {
+  font-size: 1.3rem;
+}
+
+.message-content h3 {
+  font-size: 1.12rem;
+}
+
+.message-content ul,
+.message-content ol {
+  padding-left: 1.4rem;
+}
+
+.message-content li {
+  margin-block: 0.35rem;
+}
+
+.message-content a {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: rgb(161 161 170 / 0.65);
+  text-underline-offset: 3px;
+}
+
+.message-content blockquote {
+  border-left: 2px solid #71717a;
+  color: #71717a;
+  padding-left: 1rem;
+}
+
+.message-content table {
+  border-collapse: collapse;
+  display: block;
+  margin-block: 1.25rem;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.message-content th,
+.message-content td {
+  border: 1px solid rgb(161 161 170 / 0.28);
+  padding: 0.6rem 0.8rem;
+  text-align: left;
 }

@@ -12,48 +12,148 @@ export type Database = {
       profiles: {
         Row: {
           id: string
-          email: string
+          email: string | null
           full_name: string | null
           avatar_url: string | null
+          created_at: string
           updated_at: string
         }
         Insert: {
           id: string
-          email: string
+          email?: string | null
           full_name?: string | null
           avatar_url?: string | null
+          created_at?: string
           updated_at?: string
         }
         Update: {
           id?: string
-          email?: string
+          email?: string | null
           full_name?: string | null
           avatar_url?: string | null
+          created_at?: string
           updated_at?: string
         }
+        Relationships: []
       }
-      conversations: {
+      workspaces: {
         Row: {
           id: string
-          user_id: string
-          title: string
+          owner_id: string
+          name: string
+          slug: string
           created_at: string
           updated_at: string
         }
         Insert: {
           id?: string
-          user_id: string
-          title: string
+          owner_id: string
+          name: string
+          slug: string
           created_at?: string
           updated_at?: string
         }
         Update: {
           id?: string
-          user_id?: string
-          title?: string
+          owner_id?: string
+          name?: string
+          slug?: string
           created_at?: string
           updated_at?: string
         }
+        Relationships: [
+          {
+            foreignKeyName: "workspaces_owner_id_fkey"
+            columns: ["owner_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      workspace_members: {
+        Row: {
+          id: string
+          workspace_id: string
+          user_id: string
+          role: 'owner' | 'admin' | 'member'
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          workspace_id: string
+          user_id: string
+          role: 'owner' | 'admin' | 'member'
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          workspace_id?: string
+          user_id?: string
+          role?: 'owner' | 'admin' | 'member'
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "workspace_members_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "workspace_members_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      conversations: {
+        Row: {
+          id: string
+          workspace_id: string
+          user_id: string
+          title: string
+          model: string
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          workspace_id: string
+          user_id: string
+          title?: string
+          model?: string
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          workspace_id?: string
+          user_id?: string
+          title?: string
+          model?: string
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversations_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conversations_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          }
+        ]
       }
       messages: {
         Row: {
@@ -61,35 +161,374 @@ export type Database = {
           conversation_id: string
           role: 'user' | 'assistant' | 'system'
           content: string
+          model: string | null
+          metadata: Json
           created_at: string
-          client_message_id: string | null
-          metadata: Json | null
         }
         Insert: {
           id?: string
           conversation_id: string
           role: 'user' | 'assistant' | 'system'
           content: string
+          model?: string | null
+          metadata?: Json
           created_at?: string
-          client_message_id?: string | null
-          metadata?: Json | null
         }
         Update: {
           id?: string
           conversation_id?: string
           role?: 'user' | 'assistant' | 'system'
           content?: string
+          model?: string | null
+          metadata?: Json
           created_at?: string
-          client_message_id?: string | null
-          metadata?: Json | null
         }
+        Relationships: [
+          {
+            foreignKeyName: "messages_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      attachments: {
+        Row: {
+          id: string
+          message_id: string
+          type: 'file' | 'image' | 'url'
+          filename: string | null
+          storage_path: string | null
+          mime_type: string | null
+          size: number | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          message_id: string
+          type: 'file' | 'image' | 'url'
+          filename?: string | null
+          storage_path?: string | null
+          mime_type?: string | null
+          size?: number | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          message_id?: string
+          type?: 'file' | 'image' | 'url'
+          filename?: string | null
+          storage_path?: string | null
+          mime_type?: string | null
+          size?: number | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "attachments_message_id_fkey"
+            columns: ["message_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      ai_models: {
+        Row: {
+          id: string
+          name: string
+          display_name: string
+          provider: string
+          description: string | null
+          is_active: boolean
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          name: string
+          display_name: string
+          provider: string
+          description?: string | null
+          is_active?: boolean
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          name?: string
+          display_name?: string
+          provider?: string
+          description?: string | null
+          is_active?: boolean
+          created_at?: string
+        }
+        Relationships: []
+      }
+      knowledge_bases: {
+        Row: {
+          id: string
+          workspace_id: string
+          created_by: string | null
+          name: string
+          description: string | null
+          is_active: boolean
+          metadata: Json
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          workspace_id: string
+          created_by?: string | null
+          name: string
+          description?: string | null
+          is_active?: boolean
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          workspace_id?: string
+          created_by?: string | null
+          name?: string
+          description?: string | null
+          is_active?: boolean
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "knowledge_bases_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      documents: {
+        Row: {
+          id: string
+          workspace_id: string | null
+          knowledge_base_id: string
+          title: string
+          filename: string | null
+          storage_path: string | null
+          source_type: string
+          source_url: string | null
+          content: string | null
+          document_status: string
+          processing_status: string
+          error_message: string | null
+          token_count: number | null
+          chunk_count: number | null
+          file_size_bytes: number | null
+          mime_type: string | null
+          metadata: Json
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          workspace_id?: string | null
+          knowledge_base_id: string
+          title: string
+          filename?: string | null
+          storage_path?: string | null
+          source_type?: string
+          source_url?: string | null
+          content?: string | null
+          document_status?: string
+          processing_status?: string
+          error_message?: string | null
+          token_count?: number | null
+          chunk_count?: number | null
+          file_size_bytes?: number | null
+          mime_type?: string | null
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          workspace_id?: string | null
+          knowledge_base_id?: string
+          title?: string
+          filename?: string | null
+          storage_path?: string | null
+          source_type?: string
+          source_url?: string | null
+          content?: string | null
+          document_status?: string
+          processing_status?: string
+          error_message?: string | null
+          token_count?: number | null
+          chunk_count?: number | null
+          file_size_bytes?: number | null
+          mime_type?: string | null
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "documents_knowledge_base_id_fkey"
+            columns: ["knowledge_base_id"]
+            isOneToOne: false
+            referencedRelation: "knowledge_bases"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "documents_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      processing_jobs: {
+        Row: {
+          id: string
+          document_id: string
+          workspace_id: string
+          job_type: string
+          status: string
+          progress: number
+          error_message: string | null
+          metadata: Json
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          document_id: string
+          workspace_id: string
+          job_type?: string
+          status?: string
+          progress?: number
+          error_message?: string | null
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          document_id?: string
+          workspace_id?: string
+          job_type?: string
+          status?: string
+          progress?: number
+          error_message?: string | null
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "processing_jobs_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "documents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "processing_jobs_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      document_chunks: {
+        Row: {
+          id: string
+          document_id: string
+          knowledge_base_id: string
+          chunk_index: number
+          content: string
+          token_count: number | null
+          embedding: string | number[] | Json | null
+          embedding_model: string | null
+          embedded_at: string | null
+          metadata: Json
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          document_id: string
+          knowledge_base_id: string
+          chunk_index: number
+          content: string
+          token_count?: number | null
+          embedding?: string | number[] | Json | null
+          embedding_model?: string | null
+          embedded_at?: string | null
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          document_id?: string
+          knowledge_base_id?: string
+          chunk_index?: number
+          content?: string
+          token_count?: number | null
+          embedding?: string | number[] | Json | null
+          embedding_model?: string | null
+          embedded_at?: string | null
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "document_chunks_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "documents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "document_chunks_knowledge_base_id_fkey"
+            columns: ["knowledge_base_id"]
+            isOneToOne: false
+            referencedRelation: "knowledge_bases"
+            referencedColumns: ["id"]
+          }
+        ]
       }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      is_workspace_member: {
+        Args: {
+          _workspace_id: string
+        }
+        Returns: boolean
+      }
+      match_document_chunks: {
+        Args: {
+          query_embedding: string | number[]
+          match_count?: number
+          target_workspace?: string | null
+          similarity_threshold?: number
+        }
+        Returns: {
+          id: string
+          document_id: string
+          content: string
+          similarity: number
+          metadata: Json
+        }[]
+      }
     }
     Enums: {
       [_ in never]: never

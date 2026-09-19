@@ -1,302 +1,242 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useRef, useEffect, useState, useMemo } from 'react'
 import { EmptyState } from './EmptyState'
 import { MessageBubble } from './MessageBubble'
 import { MessageInput } from './MessageInput'
-import { Database } from '@/lib/supabase/database.types'
-import { Bot, AlertCircle, Square, RefreshCcw } from 'lucide-react'
-import { truncateConversationFrom } from '@/lib/supabase/queries'
-
-type Message = Database['public']['Tables']['messages']['Row']
-type ChatState = 'idle' | 'submitting' | 'streaming' | 'completed' | 'error'
+import { ChevronDown, PanelLeft, Check, Sparkles, Brain, Palette, Code2 } from 'lucide-react'
+import Image from 'next/image'
+import { useSidebar } from '@/components/sidebar/SidebarContext'
+import { useChatStore } from '@/lib/store/useChatStore'
+import { AVAILABLE_MODELS } from '@/lib/store/dummyData'
 
 interface ChatWindowProps {
-  conversationId?: string
-  initialMessages?: Message[]
+  initialConversationId?: string
 }
 
-export function ChatWindow({ conversationId, initialMessages = [] }: ChatWindowProps) {
-  const [messages, setMessages] = useState<Message[]>(initialMessages)
-  const [chatState, setChatState] = useState<ChatState>('idle')
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  
-  const [streamingContent, setStreamingContent] = useState('')
-  const [lastUserMessage, setLastUserMessage] = useState<{content: string, id: string} | null>(null)
-  
+export function ChatWindow({ initialConversationId }: ChatWindowProps = {}) {
+  const { isOpen, toggleSidebar } = useSidebar()
+  const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false)
+  const modelDropdownRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const abortControllerRef = useRef<AbortController | null>(null)
-  const isGenerating = useRef(false)
 
+  const {
+    getActiveConversation,
+    chatState,
+    streamingContent,
+    sendMessage,
+    regenerateResponse,
+    editUserMessage,
+    toggleFeedback,
+    copyMessage,
+    selectedModel,
+    setSelectedModel,
+    loadConversations,
+    selectConversation
+  } = useChatStore()
+
+  const activeConversation = getActiveConversation()
+  const messages = useMemo(() => activeConversation?.messages || [], [activeConversation?.messages])
+  const currentModel = AVAILABLE_MODELS.find(m => m.id === selectedModel) || AVAILABLE_MODELS[0]
+
+  // Load conversations from Supabase on mount and select initial conversation if provided
+  useEffect(() => {
+    loadConversations().then(() => {
+      if (initialConversationId) {
+        selectConversation(initialConversationId)
+      }
+    })
+  }, [loadConversations, selectConversation, initialConversationId])
+
+  // Auto-scroll when messages update or streaming
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, streamingContent, chatState])
 
+  // Close model dropdown on click outside
   useEffect(() => {
-    const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && (chatState === 'streaming' || chatState === 'submitting')) {
-        handleStop()
+    function handleClickOutside(e: MouseEvent) {
+      if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) {
+        setIsModelDropdownOpen(false)
       }
     }
-    window.addEventListener('keydown', handleGlobalKeyDown)
-    return () => window.removeEventListener('keydown', handleGlobalKeyDown)
-  }, [chatState])
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
 
-  const handleSendMessage = async (content?: string, retryClientMessageId?: string) => {
-    if (!conversationId || isGenerating.current) {
-      console.warn('Blocked: No conversation ID or already generating')
-      return
-    }
-
-    isGenerating.current = true
-    setErrorMessage(null)
-    setChatState('submitting')
-
-    let clientMessageId = retryClientMessageId
-    
-    // If content is provided, we are sending a new user message
-    if (content) {
-      clientMessageId = retryClientMessageId || `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
-      setLastUserMessage({ content, id: clientMessageId })
-
-      if (!retryClientMessageId) {
-        const tempUserMsg: Message = {
-          id: clientMessageId,
-          conversation_id: conversationId,
-          role: 'user',
-          content,
-          created_at: new Date().toISOString(),
-          client_message_id: clientMessageId,
-          metadata: null
-        }
-        setMessages(prev => [...prev, tempUserMsg])
-      }
-    }
-
-    try {
-      abortControllerRef.current = new AbortController()
-      setChatState('streaming')
-      setStreamingContent('')
-      
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversationId, content, clientMessageId }),
-        signal: abortControllerRef.current.signal
-      })
-
-      if (!response.ok) {
-        throw new Error(`API error: ${response.statusText}`)
-      }
-
-      if (!response.body) throw new Error("No response body")
-
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder('utf-8')
-      let fullContent = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        
-        const chunk = decoder.decode(value, { stream: true })
-        const lines = chunk.split('\n').filter(Boolean)
-        for (const line of lines) {
-          if (line.startsWith('0:')) {
-            try {
-              const text = JSON.parse(line.slice(2))
-              fullContent += text
-              setStreamingContent(fullContent)
-            } catch {
-              // Ignore incomplete chunk parses
-            }
-          }
-        }
-      }
-
-      setChatState('completed')
-      
-      // eslint-disable-next-line react-hooks/purity
-      const optimisticAssistantMsg: Message = {
-        id: `ast_${Date.now()}`, 
-        conversation_id: conversationId,
-        role: 'assistant',
-        content: fullContent,
-        created_at: new Date().toISOString(),
-        client_message_id: null,
-        metadata: null
-      }
-      
-      setMessages(prev => [...prev, optimisticAssistantMsg])
-      setStreamingContent('')
-      setChatState('idle')
-      if (content) setLastUserMessage(null)
-
-    } catch (error: unknown) {
-      const err = error as Error
-      if (err.name === 'AbortError') {
-        console.log('Stream aborted by user')
-        setChatState('idle')
-        if (streamingContent.trim().length > 0) {
-           // eslint-disable-next-line react-hooks/purity
-           const partialMsg: Message = {
-            id: `ast_${Date.now()}`,
-            conversation_id: conversationId,
-            role: 'assistant',
-            content: streamingContent,
-            created_at: new Date().toISOString(),
-            client_message_id: null,
-            metadata: null
-          }
-          setMessages(prev => [...prev, partialMsg])
-        }
-        setStreamingContent('')
-      } else {
-        console.error('Chat error:', err)
-        setChatState('error')
-        setErrorMessage(err.message || "Failed to generate response. Please try again.")
-      }
-    } finally {
-      isGenerating.current = false
-      abortControllerRef.current = null
-    }
-  }
-
-  const handleStop = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
-    }
-  }
-
-  const handleRetry = () => {
-    if (lastUserMessage) {
-      handleSendMessage(lastUserMessage.content, lastUserMessage.id)
-    } else {
-      handleSendMessage() // Regenerate
-    }
-  }
-
-  const handleEdit = async (messageId: string, newContent: string) => {
-    if (!conversationId || isGenerating.current) return
-    
-    const targetIndex = messages.findIndex(m => m.id === messageId)
-    if (targetIndex === -1) return
-    
-    setMessages(prev => prev.slice(0, targetIndex))
-    
-    try {
-      await truncateConversationFrom(conversationId, messageId)
-      handleSendMessage(newContent)
-    } catch (err) {
-      console.error("Failed to edit:", err)
-      setErrorMessage("Failed to edit message. Please refresh.")
-    }
-  }
-
-  const handleRegenerate = async () => {
-    if (!conversationId || isGenerating.current || messages.length === 0) return
-    
-    const lastMsg = messages[messages.length - 1]
-    if (lastMsg.role !== 'assistant') return
-    
-    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
-    if (!lastUserMsg) return
-
-    setMessages(prev => prev.slice(0, -1))
-    
-    try {
-      await truncateConversationFrom(conversationId, lastMsg.id)
-      handleSendMessage() // Regenerate without adding new user text
-    } catch (err) {
-      console.error("Failed to regenerate:", err)
-      setErrorMessage("Failed to regenerate. Please refresh.")
+  const renderModelIcon = (id: string) => {
+    switch (id) {
+      case 'chatinalabs-reasoning':
+        return <Brain size={14} className="text-purple-500 shrink-0" />
+      case 'chatinalabs-creative':
+        return <Palette size={14} className="text-amber-500 shrink-0" />
+      case 'chatinalabs-code':
+        return <Code2 size={14} className="text-sky-500 shrink-0" />
+      case 'chatinalabs-ai':
+      default:
+        return <Sparkles size={14} className="text-emerald-500 shrink-0" />
     }
   }
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-white dark:bg-zinc-950 relative">
-      <div className="flex-1 overflow-y-auto">
-        {!conversationId || (messages.length === 0 && chatState === 'idle') ? (
-          <EmptyState />
-        ) : (
-          <div className="flex flex-col pb-24">
-            {messages.map((msg, idx) => (
-              <MessageBubble 
-                key={msg.id} 
-                role={msg.role} 
-                content={msg.content} 
-                isLast={idx === messages.length - 1}
-                onRegenerate={idx === messages.length - 1 && msg.role === 'assistant' ? handleRegenerate : undefined}
-                onEdit={msg.role === 'user' ? (newContent) => handleEdit(msg.id, newContent) : undefined}
+    <div className="relative flex h-full flex-1 flex-col bg-[#f7f7f7] dark:bg-[#171717] overflow-hidden">
+      {/* Top Header Bar */}
+      <header className="absolute inset-x-0 top-0 z-10 flex h-13 items-center justify-between border-b border-transparent bg-[#f7f7f7]/85 px-3 sm:px-4 backdrop-blur-md dark:bg-[#171717]/85">
+        <div className="flex items-center gap-2">
+          {/* Mobile Sidebar Toggle Button */}
+          {!isOpen && (
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-zinc-200 hover:text-zinc-700 dark:hover:bg-[#252525] dark:hover:text-zinc-200 cursor-pointer md:hidden"
+              title="Open sidebar"
+              aria-label="Open sidebar"
+            >
+              <PanelLeft size={18} />
+            </button>
+          )}
+
+          {/* Model Selector Dropdown in Header */}
+          <div className="relative" ref={modelDropdownRef}>
+            <button
+              type="button"
+              onClick={() => setIsModelDropdownOpen(prev => !prev)}
+              className="flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-sm font-semibold text-zinc-800 transition-colors hover:bg-zinc-200/60 dark:text-zinc-100 dark:hover:bg-[#252525] cursor-pointer"
+              title="Select Model"
+            >
+              <span>{currentModel.name}</span>
+              <ChevronDown 
+                size={14} 
+                strokeWidth={2} 
+                className={`text-zinc-400 dark:text-zinc-500 transition-transform duration-150 ${isModelDropdownOpen ? 'rotate-180' : ''}`} 
               />
-            ))}
-            
-            {(chatState === 'submitting' || chatState === 'streaming') && (
-              chatState === 'submitting' && !streamingContent ? (
-                <div className="py-6 px-4 sm:px-8 w-full flex justify-center bg-zinc-50 dark:bg-zinc-900 border-y border-zinc-100 dark:border-zinc-800/50">
-                   <div className="max-w-3xl w-full flex gap-4 md:gap-6">
-                      <div className="shrink-0 pt-1">
-                        <div className="w-8 h-8 rounded-lg bg-emerald-600 flex items-center justify-center text-white shadow-sm ring-1 ring-emerald-700/50">
-                          <Bot size={18} />
+            </button>
+
+            {isModelDropdownOpen && (
+              <div className="absolute left-0 top-full mt-1.5 z-30 w-[245px] rounded-2xl border border-zinc-200/90 bg-white/95 p-1 shadow-xl backdrop-blur-md dark:border-zinc-800 dark:bg-[#1e1e1e]/95 text-zinc-900 dark:text-zinc-100 animate-in fade-in zoom-in-95 duration-100">
+                <div className="flex flex-col gap-0.5">
+                  {AVAILABLE_MODELS.map(model => {
+                    const isSelected = model.id === selectedModel
+                    return (
+                      <button
+                        key={model.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedModel(model.id)
+                          setIsModelDropdownOpen(false)
+                        }}
+                        className={`flex w-full items-center justify-between rounded-xl px-2.5 py-1.5 text-left transition-colors cursor-pointer ${
+                          isSelected 
+                            ? 'bg-zinc-100 dark:bg-white/[0.08]' 
+                            : 'hover:bg-zinc-50 dark:hover:bg-white/[0.04]'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0 pr-1">
+                          <div className="shrink-0 text-zinc-500">
+                            {renderModelIcon(model.id)}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[12.5px] font-medium text-zinc-900 dark:text-zinc-100">{model.name}</span>
+                              {model.badge && model.badge !== 'Default' && (
+                                <span className="rounded-full bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.2 text-[9px] font-normal text-zinc-500 border border-zinc-200/50 dark:border-zinc-700/50">
+                                  {model.badge}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[10.5px] text-zinc-400 dark:text-zinc-500 truncate max-w-[155px]">{model.description}</p>
+                          </div>
                         </div>
-                      </div>
-                      <div className="flex-1 pt-1.5 flex gap-2 items-center text-sm text-zinc-500">
-                         <div className="flex gap-1">
-                           <div className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce" style={{ animationDelay: '0ms' }} />
-                           <div className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce" style={{ animationDelay: '150ms' }} />
-                           <div className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce" style={{ animationDelay: '300ms' }} />
-                         </div>
-                         chatINALabs is thinking...
-                      </div>
-                   </div>
-                </div>
-              ) : (
-                <MessageBubble role="assistant" content={streamingContent} />
-              )
-            )}
-            
-            {chatState === 'error' && errorMessage && (
-              <div className="py-6 px-4 sm:px-8 w-full flex justify-center bg-red-50 dark:bg-red-950/20 border-y border-red-100 dark:border-red-900/50">
-                <div className="max-w-3xl w-full flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between text-red-600 dark:text-red-400">
-                   <div className="flex items-center gap-3">
-                     <AlertCircle size={20} className="shrink-0" />
-                     <p className="text-sm font-medium">{errorMessage}</p>
-                   </div>
-                   <button 
-                     onClick={handleRetry}
-                     className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-red-100 hover:bg-red-200 dark:bg-red-900/50 dark:hover:bg-red-900/80 text-sm font-medium transition-colors"
-                   >
-                     <RefreshCcw size={14} />
-                     Retry
-                   </button>
+                        {isSelected && (
+                          <Check size={13} className="text-zinc-900 dark:text-white shrink-0 ml-1" />
+                        )}
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
             )}
-            
-            <div ref={messagesEndRef} />
           </div>
-        )}
-      </div>
+        </div>
 
-      {chatState === 'streaming' && (
-        <div className="absolute bottom-24 left-0 right-0 flex justify-center pointer-events-none z-10">
-          <button
-            onClick={handleStop}
-            className="pointer-events-auto flex items-center gap-2 px-4 py-2 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 rounded-full text-sm font-medium shadow-sm transition-all animate-in slide-in-from-bottom-2 fade-in"
-          >
-            <Square size={14} className="fill-current" />
-            Stop generating
-          </button>
+        {/* Header Right */}
+        <div className="flex items-center gap-2">
+          {process.env.NODE_ENV === 'development' && (
+            <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+              dev
+            </span>
+          )}
+        </div>
+      </header>
+
+      {/* Main View: Empty State vs Conversation Thread */}
+      {!activeConversation || messages.length === 0 ? (
+        <EmptyState onSendMessage={sendMessage} isLoading={chatState !== 'idle'} />
+      ) : (
+        <div className="flex flex-1 flex-col overflow-y-auto pb-32 pt-16">
+          {messages.map((message, index) => {
+            const isLast = index === messages.length - 1
+            return (
+              <MessageBubble
+                key={message.id}
+                id={message.id}
+                role={message.role}
+                content={message.content}
+                feedback={message.feedback}
+                sources={message.sources}
+                hasKnowledge={message.hasKnowledge}
+                isLast={isLast}
+                onRegenerate={isLast && message.role === 'assistant' ? regenerateResponse : undefined}
+                onEdit={message.role === 'user' ? (newContent) => editUserMessage(message.id, newContent) : undefined}
+                onFeedback={(type) => toggleFeedback(message.id, type)}
+                onCopy={(text) => copyMessage(text)}
+              />
+            )
+          })}
+
+          {/* Thinking Animation */}
+          {chatState === 'thinking' && (
+            <div className="flex w-full justify-center px-4 py-3 sm:px-6 md:py-4">
+              <div className="flex w-full max-w-[760px] gap-3 md:gap-4 justify-start">
+                <div className="shrink-0 pt-0.5">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-white p-0.5 shadow-xs border border-zinc-200/60 dark:border-white/[0.08] dark:bg-zinc-800 overflow-hidden">
+                    <Image
+                      src="/logo-ci.png"
+                      alt="chatINALabs"
+                      width={22}
+                      height={22}
+                      className="object-contain"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 pt-1 text-xs text-zinc-400 dark:text-zinc-500">
+                  <span className="h-2 w-2 rounded-full bg-zinc-400 dark:bg-zinc-600 animate-bounce [animation-delay:-0.3s]" />
+                  <span className="h-2 w-2 rounded-full bg-zinc-400 dark:bg-zinc-600 animate-bounce [animation-delay:-0.15s]" />
+                  <span className="h-2 w-2 rounded-full bg-zinc-400 dark:bg-zinc-600 animate-bounce" />
+                  <span className="ml-1 text-xs">Thinking...</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Streaming Animation with Cursor */}
+          {chatState === 'streaming' && (
+            <MessageBubble
+              role="assistant"
+              content={`${streamingContent} ▍`}
+              isLast={true}
+            />
+          )}
+
+          <div ref={messagesEndRef} />
+
+          {/* Bottom Floating Composer */}
+          <MessageInput 
+            onSendMessage={sendMessage} 
+            isLoading={chatState !== 'idle'} 
+          />
         </div>
       )}
-
-      <div className="mt-auto">
-        <MessageInput 
-          onSendMessage={(c) => handleSendMessage(c)} 
-          isLoading={chatState === 'submitting' || chatState === 'streaming'} 
-          disabled={!conversationId} 
-        />
-      </div>
     </div>
   )
 }
