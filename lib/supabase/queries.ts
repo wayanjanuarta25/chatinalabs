@@ -148,30 +148,60 @@ export async function saveSupabaseMessage(
   role: 'user' | 'assistant' | 'system',
   content: string,
   model?: string | null,
-  metadata?: Record<string, unknown>
+  metadata?: Record<string, unknown>,
+  clientMessageId?: string | null
 ): Promise<DBMessage | null> {
+  const mergedMetadata: Record<string, unknown> = {
+    ...(metadata || {}),
+    ...(model ? { model } : {}),
+  }
+
+  const effectiveClientMsgId =
+    clientMessageId ||
+    (typeof metadata?.clientMessageId === 'string' ? (metadata.clientMessageId as string) : null) ||
+    (typeof metadata?.client_message_id === 'string' ? (metadata.client_message_id as string) : null)
+
+  const insertPayload: Database['public']['Tables']['messages']['Insert'] = {
+    conversation_id: conversationId,
+    role,
+    content,
+    metadata: mergedMetadata as Database['public']['Tables']['messages']['Insert']['metadata'],
+    ...(effectiveClientMsgId ? { client_message_id: effectiveClientMsgId } : {}),
+  }
+
   const { data, error } = await supabase
     .from('messages')
-    .insert({
-      conversation_id: conversationId,
-      role,
-      content,
-      model: model || null,
-      metadata: (metadata as Database['public']['Tables']['messages']['Insert']['metadata']) || {},
-    })
+    .insert(insertPayload)
     .select()
     .single()
 
   if (error) {
-    console.error('Error saving message:', error.message)
+    console.error('[saveSupabaseMessage] Error saving message to database:', {
+      code: error.code,
+      message: error.message,
+      details: error.details,
+      hint: error.hint,
+      conversationId,
+      role,
+    })
     return null
   }
 
   // Update conversation updated_at
-  await supabase
+  const { error: convUpdateError } = await supabase
     .from('conversations')
     .update({ updated_at: new Date().toISOString() })
     .eq('id', conversationId)
+
+  if (convUpdateError) {
+    console.warn('[saveSupabaseMessage] Warning updating conversation updated_at:', {
+      code: convUpdateError.code,
+      message: convUpdateError.message,
+      details: convUpdateError.details,
+      hint: convUpdateError.hint,
+      conversationId,
+    })
+  }
 
   return data
 }

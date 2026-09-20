@@ -24,6 +24,7 @@ export async function POST(req: Request) {
     const selectedModel = typeof body.model === 'string' && body.model ? body.model : 'chatinalabs-ai'
     const incomingMessages: AIMessage[] = Array.isArray(body.messages) ? body.messages : []
     const isKnowledgeEnabled = body.knowledgeMode !== false
+    const clientMessageId = typeof body.clientMessageId === 'string' ? body.clientMessageId : undefined
 
     if (!conversationId || typeof conversationId !== 'string') {
       return NextResponse.json({ error: 'Missing or invalid conversationId' }, { status: 400 })
@@ -48,7 +49,18 @@ export async function POST(req: Request) {
 
     // 1. Save user message to database if new message content provided
     if (content) {
-      await saveSupabaseMessage(supabase, conversationId, 'user', content)
+      const savedUserMsg = await saveSupabaseMessage(
+        supabase,
+        conversationId,
+        'user',
+        content,
+        null,
+        undefined,
+        clientMessageId
+      )
+      if (!savedUserMsg) {
+        console.error('[API/Chat] Failed to persist user message:', { conversationId, clientMessageId })
+      }
     }
 
     // 2. Fetch recent conversation history for context
@@ -113,7 +125,7 @@ export async function POST(req: Request) {
             // Save assistant final response
             if (!hasSavedAssistantMessage && fullAssistantText.trim().length > 0) {
               hasSavedAssistantMessage = true
-              await saveSupabaseMessage(
+              const savedAiMsg = await saveSupabaseMessage(
                 supabase,
                 conversationId,
                 'assistant',
@@ -126,6 +138,9 @@ export async function POST(req: Request) {
                   sources: ragSources,
                 }
               )
+              if (!savedAiMsg) {
+                console.error('[API/Chat] Failed to persist assistant message:', { conversationId, selectedModel })
+              }
 
               // Background auto-title generation if new chat
               if (conversation.title === 'New Chat' || conversation.title === 'New Conversation') {

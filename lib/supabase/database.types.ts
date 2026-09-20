@@ -161,7 +161,8 @@ export type Database = {
           conversation_id: string
           role: 'user' | 'assistant' | 'system'
           content: string
-          model: string | null
+          client_message_id?: string | null
+          model?: string | null
           metadata: Json
           created_at: string
         }
@@ -170,6 +171,7 @@ export type Database = {
           conversation_id: string
           role: 'user' | 'assistant' | 'system'
           content: string
+          client_message_id?: string | null
           model?: string | null
           metadata?: Json
           created_at?: string
@@ -179,6 +181,7 @@ export type Database = {
           conversation_id?: string
           role?: 'user' | 'assistant' | 'system'
           content?: string
+          client_message_id?: string | null
           model?: string | null
           metadata?: Json
           created_at?: string

@@ -16,6 +16,11 @@ const manrope = Manrope({
 export const metadata: Metadata = {
   title: "chatINALabs",
   description: "Premium AI Assistant",
+  icons: {
+    icon: "/logo-ci.png",
+    shortcut: "/logo-ci.png",
+    apple: "/logo-ci.png",
+  },
 };
 
 export default function RootLayout({
