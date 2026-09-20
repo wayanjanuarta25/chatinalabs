@@ -3,10 +3,12 @@
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { getUserWorkspace } from '@/lib/supabase/workspace'
 
 /**
- * Ensures a user's profile and default personal workspace exist.
- * Serves as an application-level guarantee in addition to database triggers.
+ * Fallback recovery function to ensure user profile and workspace exist.
+ * Primary provisioning is handled atomically by database trigger `on_auth_user_created`.
+ * This function only acts as an emergency recovery tool and will NEVER blindly insert workspaces.
  */
 export async function ensureUserProfileAndWorkspace(
   supabase: Awaited<ReturnType<typeof createClient>>,
@@ -15,9 +17,10 @@ export async function ensureUserProfileAndWorkspace(
   fullName?: string
 ) {
   try {
+    console.log('[AUTH] Checking profile and workspace recovery for user.id:', userId)
     const displayName = fullName?.trim() || userEmail.split('@')[0] || 'User'
 
-    // 1. Automatic Profile Creation / Sync
+    // 1. Sync profile if needed
     const { error: profileError } = await supabase
       .from('profiles')
       .upsert({
@@ -28,52 +31,56 @@ export async function ensureUserProfileAndWorkspace(
       }, { onConflict: 'id' })
 
     if (profileError) {
-      console.error('[auth] Failed to sync profile:', profileError.message)
+      console.warn('[AUTH] Profile sync notice:', profileError.message)
     }
 
-    // 2. Check if user already has a workspace
-    const { data: memberships, error: memberQueryError } = await supabase
-      .from('workspace_members')
-      .select('workspace_id, role')
-      .eq('user_id', userId)
-
-    if (memberQueryError) {
-      console.warn('[auth] Could not check workspace members:', memberQueryError.message)
+    // 2. Check existing workspace first (do NOT blindly insert)
+    const existingWsId = await getUserWorkspace(supabase, userId)
+    if (existingWsId) {
+      console.log('[AUTH] Workspace already exists for user.id:', userId, 'workspace.id:', existingWsId)
+      return existingWsId
     }
 
-    // If no existing workspace membership, provision a default personal workspace
-    if (!memberships || memberships.length === 0) {
-      const slug = `personal-${userId.slice(0, 8)}`
-
-      const { data: newWorkspace, error: wsError } = await supabase
-        .from('workspaces')
-        .insert({
-          owner_id: userId,
-          name: `${displayName}'s Workspace`,
-          slug: slug,
-        })
-        .select('id')
-        .single()
-
-      if (wsError) {
-        console.error('[auth] Failed to create personal workspace:', wsError.message)
-      } else if (newWorkspace) {
-        // Ensure owner membership in workspace_members
-        const { error: memberInsertError } = await supabase
-          .from('workspace_members')
-          .upsert({
-            workspace_id: newWorkspace.id,
-            user_id: userId,
-            role: 'owner',
-          }, { onConflict: 'workspace_id,user_id' })
-
-        if (memberInsertError) {
-          console.error('[auth] Failed to insert workspace owner member:', memberInsertError.message)
-        }
-      }
+    // 3. Fallback recovery: Only attempt insert if authenticated user session matches
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user || user.id !== userId) {
+      console.warn('[AUTH] Aborting workspace fallback creation: No verified active session for user.id:', userId)
+      return null
     }
+
+    const slug = `personal-${userId.slice(0, 8)}`
+    const { data: newWorkspace, error: wsError } = await supabase
+      .from('workspaces')
+      .insert({
+        owner_id: userId,
+        name: `${displayName}'s Workspace`,
+        slug: slug,
+      })
+      .select('id')
+      .single()
+
+    if (wsError) {
+      console.error('[AUTH] Fallback workspace creation failed:', wsError.message)
+      return null
+    }
+
+    if (newWorkspace) {
+      console.log('[AUTH] Fallback workspace created for user.id:', userId, 'workspace.id:', newWorkspace.id)
+      await supabase
+        .from('workspace_members')
+        .upsert({
+          workspace_id: newWorkspace.id,
+          user_id: userId,
+          role: 'owner',
+        }, { onConflict: 'workspace_id,user_id' })
+
+      return newWorkspace.id
+    }
+
+    return null
   } catch (err) {
-    console.error('[auth] Error in ensureUserProfileAndWorkspace:', err)
+    console.error('[AUTH] Error in ensureUserProfileAndWorkspace fallback:', err)
+    return null
   }
 }
 
@@ -96,14 +103,11 @@ export async function login(formData: FormData) {
     redirect('/login?message=' + encodeURIComponent(error.message))
   }
 
-  if (data.user) {
-    await ensureUserProfileAndWorkspace(
-      supabase,
-      data.user.id,
-      data.user.email || email,
-      data.user.user_metadata?.full_name
-    )
+  if (!data.user || !data.session) {
+    redirect('/login?message=' + encodeURIComponent('Could not establish session.'))
   }
+
+  console.log('[AUTH] Login successful for user.id:', data.user.id)
 
   revalidatePath('/', 'layout')
   redirect('/chat')
@@ -139,12 +143,8 @@ export async function signup(formData: FormData) {
   }
 
   if (data.user) {
-    await ensureUserProfileAndWorkspace(
-      supabase,
-      data.user.id,
-      data.user.email || email,
-      fullName
-    )
+    console.log('[AUTH] Signup created user.id:', data.user.id)
+    // The database trigger `on_auth_user_created` automatically provisions profile, personal workspace, and owner membership.
   }
 
   if (data.session) {

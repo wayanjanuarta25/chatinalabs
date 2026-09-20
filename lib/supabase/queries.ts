@@ -1,48 +1,34 @@
 import { SupabaseClient } from '@supabase/supabase-js'
 import { Database } from './database.types'
+import { getUserWorkspace } from './workspace'
 
+export { getUserWorkspace }
 export type DBConversation = Database['public']['Tables']['conversations']['Row']
 export type DBMessage = Database['public']['Tables']['messages']['Row']
 
 /**
  * Ensures the user has an active workspace ID.
- * Falls back to creating one if missing.
+ * First checks existing membership and ownership via getUserWorkspace().
  */
 export async function getOrCreateUserWorkspace(
   supabase: SupabaseClient<Database>,
   userId: string,
   userEmail: string
 ): Promise<string> {
-  // 1. Check workspace_members
-  const { data: member } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('user_id', userId)
-    .limit(1)
-    .maybeSingle()
-
-  if (member?.workspace_id) {
-    return member.workspace_id
+  // 1. Check existing workspace
+  const existingWsId = await getUserWorkspace(supabase, userId)
+  if (existingWsId) {
+    return existingWsId
   }
 
-  // 2. Check workspaces owned by user
-  const { data: owned } = await supabase
-    .from('workspaces')
-    .select('id')
-    .eq('owner_id', userId)
-    .limit(1)
-    .maybeSingle()
-
-  if (owned?.id) {
-    await supabase.from('workspace_members').upsert({
-      workspace_id: owned.id,
-      user_id: userId,
-      role: 'owner',
-    }, { onConflict: 'workspace_id,user_id' })
-    return owned.id
+  // 2. Safe fallback recovery only if user session matches
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user || user.id !== userId) {
+    console.error('[AUTH] getOrCreateUserWorkspace: Aborted fallback insert. No active session matching user.id:', userId)
+    throw new Error('Workspace missing and user session unverified.')
   }
 
-  // 3. Create default personal workspace
+  console.log('[AUTH] Fallback creating personal workspace for user.id:', userId)
   const slug = `personal-${userId.slice(0, 8)}`
   const displayName = userEmail.split('@')[0] || 'Personal'
   
@@ -57,26 +43,7 @@ export async function getOrCreateUserWorkspace(
     .single()
 
   if (error || !newWs) {
-    // Retry with random suffix in case of slug collision
-    const altSlug = `personal-${userId.slice(0, 8)}-${Date.now().toString().slice(-4)}`
-    const { data: retryWs } = await supabase
-      .from('workspaces')
-      .insert({
-        owner_id: userId,
-        name: `${displayName}'s Workspace`,
-        slug: altSlug,
-      })
-      .select('id')
-      .single()
-
-    if (retryWs) {
-      await supabase.from('workspace_members').upsert({
-        workspace_id: retryWs.id,
-        user_id: userId,
-        role: 'owner',
-      }, { onConflict: 'workspace_id,user_id' })
-      return retryWs.id
-    }
+    console.error('[AUTH] getOrCreateUserWorkspace: Could not create workspace:', error?.message)
     throw new Error('Could not provision workspace for user.')
   }
 
@@ -86,6 +53,7 @@ export async function getOrCreateUserWorkspace(
     role: 'owner',
   }, { onConflict: 'workspace_id,user_id' })
 
+  console.log('[AUTH] Fallback workspace created:', newWs.id, 'for user.id:', userId)
   return newWs.id
 }
 
@@ -131,6 +99,7 @@ export async function fetchConversationMessages(
 
 /**
  * Create a new conversation row in Supabase.
+ * Verifies authenticated user and active workspace before inserting.
  */
 export async function createSupabaseConversation(
   supabase: SupabaseClient<Database>,
@@ -138,9 +107,18 @@ export async function createSupabaseConversation(
   model: string = 'chatINALabs AI'
 ): Promise<DBConversation | null> {
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return null
+  if (!user) {
+    console.warn('[AUTH] Cannot create conversation: User is not authenticated')
+    return null
+  }
 
-  const workspaceId = await getOrCreateUserWorkspace(supabase, user.id, user.email || '')
+  const workspaceId = await getUserWorkspace(supabase, user.id)
+  if (!workspaceId) {
+    console.error('[AUTH] Cannot create conversation: Workspace missing for user.id:', user.id)
+    return null
+  }
+
+  console.log('[AUTH] Creating conversation. user.id:', user.id, 'workspace.id:', workspaceId)
 
   const { data, error } = await supabase
     .from('conversations')
@@ -154,7 +132,7 @@ export async function createSupabaseConversation(
     .single()
 
   if (error) {
-    console.error('Error creating conversation:', error.message)
+    console.error('[AUTH] Error creating conversation:', error.message)
     return null
   }
 
