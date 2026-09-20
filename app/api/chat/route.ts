@@ -6,22 +6,8 @@ import {
   updateSupabaseConversation,
   getOrCreateUserWorkspace
 } from '@/lib/supabase/queries'
-import { 
-  aiService, 
-  AIMessage, 
-  AIFinishReason, 
-  buildRuntimeContext, 
-  BASE_SYSTEM_PROMPT,
-  buildMultimodalMessageContent,
-  markAttachmentsAsVisionProcessed,
-  fastCheckImageIntent,
-  detectAndEnhanceImageIntent,
-  generateImageBuffer,
-  persistGeneratedImageAttachment,
-  createStreamFromText,
-  createReadableStream
-} from '@/lib/ai'
-import { ragService, RAGSourceCitation, DEFAULT_RAG_SYSTEM_PROMPT } from '@/lib/knowledge/rag'
+import { aiService, AIMessage, AIFinishReason } from '@/lib/ai'
+import { ragService, RAGSourceCitation } from '@/lib/knowledge/rag'
 
 export async function POST(req: Request) {
   try {
@@ -39,8 +25,6 @@ export async function POST(req: Request) {
     const incomingMessages: AIMessage[] = Array.isArray(body.messages) ? body.messages : []
     const isKnowledgeEnabled = body.knowledgeMode !== false
     const clientMessageId = typeof body.clientMessageId === 'string' ? body.clientMessageId : undefined
-    const isRegenerate = Boolean(body.isRegenerate)
-    const isRetry = Boolean(body.isRetry)
 
     if (!conversationId || typeof conversationId !== 'string') {
       return NextResponse.json({ error: 'Missing or invalid conversationId' }, { status: 400 })
@@ -63,190 +47,29 @@ export async function POST(req: Request) {
       workspaceId = await getOrCreateUserWorkspace(supabase, user.id, user.email || '')
     }
 
-    // Resolve workspace name and user display name for runtime context
-    let workspaceName = 'chatINALabs'
-    const { data: wsData } = await supabase
-      .from('workspaces')
-      .select('name')
-      .eq('id', workspaceId)
-      .single()
-    if (wsData?.name) {
-      workspaceName = wsData.name
-    }
-
-    const userDisplayName = (user.user_metadata?.full_name as string) || (user.email ? user.email.split('@')[0] : 'User')
-
-    const runtimeContext = buildRuntimeContext({
-      user_id: user.id,
-      userName: userDisplayName,
-      workspace_id: workspaceId,
-      workspace_name: workspaceName,
-    })
-
-    // 1. Save user message to database if new message content provided and not regenerating
-    if (content && !isRegenerate) {
-      let shouldSaveUserMsg = true
-      if (isRetry) {
-        const existingMessages = await fetchConversationMessages(supabase, conversationId)
-        const lastUser = [...existingMessages].reverse().find(m => m.role === 'user')
-        if (lastUser && lastUser.content === content) {
-          shouldSaveUserMsg = false
-        }
-      }
-
-      if (shouldSaveUserMsg && clientMessageId) {
-        const { data: existingMsg } = await supabase
-          .from('messages')
-          .select('id')
-          .eq('id', clientMessageId)
-          .maybeSingle()
-        if (existingMsg) {
-          shouldSaveUserMsg = false
-        }
-      }
-
-      if (shouldSaveUserMsg) {
-        const savedUserMsg = await saveSupabaseMessage(
-          supabase,
-          conversationId,
-          'user',
-          content,
-          null,
-          undefined,
-          clientMessageId
-        )
-        if (!savedUserMsg) {
-          console.error('[API/Chat] Failed to persist user message:', { conversationId, clientMessageId })
-        }
+    // 1. Save user message to database if new message content provided
+    if (content) {
+      const savedUserMsg = await saveSupabaseMessage(
+        supabase,
+        conversationId,
+        'user',
+        content,
+        null,
+        undefined,
+        clientMessageId
+      )
+      if (!savedUserMsg) {
+        console.error('[API/Chat] Failed to persist user message:', { conversationId, clientMessageId })
       }
     }
 
-    // 1.5 Image Generation Request Interceptor
-    if (content && fastCheckImageIntent(content)) {
-      try {
-        const intent = await detectAndEnhanceImageIntent(content)
-        if (intent.isImageRequest && intent.englishPrompt) {
-          console.log(`[CHAT] Image generation request detected\nconversation.id:\n${conversationId}\nprompt:\n${intent.englishPrompt}`)
-          
-          const assistantMessageId = crypto.randomUUID()
-          const genResult = await generateImageBuffer(intent.englishPrompt, intent.width, intent.height)
-
-          const attachment = await persistGeneratedImageAttachment({
-            workspaceId,
-            conversationId,
-            messageId: assistantMessageId,
-            buffer: genResult.buffer,
-            mimeType: genResult.mimeType,
-            suggestedFileName: intent.suggestedFileName || 'generated-image.png',
-            prompt: content,
-            englishPrompt: intent.englishPrompt,
-            model: genResult.model,
-            aspectRatio: intent.aspectRatio || '9:16',
-          })
-
-          const captionText = intent.caption || 'Berikut adalah gambar yang telah dibuat sesuai permintaan Anda:'
-
-          await saveSupabaseMessage(
-            supabase,
-            conversationId,
-            'assistant',
-            captionText,
-            genResult.model,
-            {
-              isGeneratedImage: true,
-              generatedAttachmentId: attachment.id,
-              attachment_url: attachment.signedUrl,
-              aspect_ratio: intent.aspectRatio,
-              status: 'completed',
-            },
-            assistantMessageId
-          )
-
-          const stream = createReadableStream(createStreamFromText(captionText, 4, 10))
-          const attachmentPayload = {
-            id: attachment.id,
-            message_id: attachment.message_id,
-            workspace_id: attachment.workspace_id,
-            file_name: attachment.file_name,
-            file_size: attachment.file_size,
-            mime_type: attachment.mime_type,
-            storage_path: attachment.storage_path,
-            attachment_type: 'image',
-            signedUrl: attachment.signedUrl,
-            metadata: attachment.metadata,
-          }
-
-          return new Response(stream, {
-            headers: {
-              'Content-Type': 'text/plain; charset=utf-8',
-              'Cache-Control': 'no-cache, no-transform',
-              'X-Generated-Attachment': encodeURIComponent(JSON.stringify(attachmentPayload)),
-              'X-Generated-Attachment-Id': attachment.id,
-            },
-          })
-        }
-      } catch (imageErr) {
-        console.error('[API/Chat] Image generation error:', imageErr)
-        const errorMessage = imageErr instanceof Error ? imageErr.message : 'Gagal menghasilkan gambar.'
-        const assistantMessageId = crypto.randomUUID()
-        const userFriendlyMsg = `⚠️ ${errorMessage}`
-
-        await saveSupabaseMessage(
-          supabase,
-          conversationId,
-          'assistant',
-          userFriendlyMsg,
-          selectedModel,
-          { status: 'error', error: errorMessage },
-          assistantMessageId
-        )
-
-        const stream = createReadableStream(createStreamFromText(userFriendlyMsg, 4, 10))
-        return new Response(stream, {
-          headers: {
-            'Content-Type': 'text/plain; charset=utf-8',
-            'Cache-Control': 'no-cache, no-transform',
-          },
-        })
-      }
-    }
-
-    // 2. Fetch recent conversation history for context & build multimodal messages
+    // 2. Fetch recent conversation history for context
     const dbMessages = await fetchConversationMessages(supabase, conversationId)
     const MAX_CONTEXT = 20
-    const recentDbMessages = dbMessages.slice(-MAX_CONTEXT)
-
-    const processedImageAttachmentIds: string[] = []
-    let contextMessages: AIMessage[] = []
-
-    for (let i = 0; i < recentDbMessages.length; i++) {
-      const m = recentDbMessages[i]
-      const hasImages = m.role === 'user' && m.message_attachments && m.message_attachments.some(a => a.attachment_type === 'image')
-      const isRecentTurn = i >= recentDbMessages.length - 4
-
-      if (hasImages && isRecentTurn) {
-        const multimodalContent = await buildMultimodalMessageContent(m.content, m.message_attachments)
-        contextMessages.push({
-          role: m.role as 'system' | 'user' | 'assistant',
-          content: multimodalContent,
-        })
-        m.message_attachments?.forEach(a => {
-          if (a.attachment_type === 'image') {
-            processedImageAttachmentIds.push(a.id)
-          }
-        })
-      } else {
-        contextMessages.push({
-          role: m.role as 'system' | 'user' | 'assistant',
-          content: m.content,
-        })
-      }
-    }
-
-    // If regenerating, remove trailing assistant response from context so AI generates a fresh reply
-    if (isRegenerate && contextMessages.length > 0 && contextMessages[contextMessages.length - 1].role === 'assistant') {
-      contextMessages = contextMessages.slice(0, -1)
-    }
+    let contextMessages: AIMessage[] = dbMessages.slice(-MAX_CONTEXT).map(m => ({
+      role: m.role as 'system' | 'user' | 'assistant',
+      content: m.content,
+    }))
 
     // Fallback if client passed raw messages array and db query returned empty
     if (contextMessages.length === 0 && incomingMessages.length > 0) {
@@ -269,9 +92,6 @@ export async function POST(req: Request) {
         query: content,
         history: contextMessages,
         model: selectedModel,
-        options: {
-          systemPrompt: `${DEFAULT_RAG_SYSTEM_PROMPT}\n\n${runtimeContext}`,
-        },
       })
 
       if (ragResult.hasKnowledge) {
@@ -281,34 +101,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // 4. Runtime Context Injection: ensure real-time awareness is always active
-    const existingSystemIdx = messagesToSend.findIndex(m => m.role === 'system')
-    if (existingSystemIdx !== -1) {
-      const currentSystemContent = typeof messagesToSend[existingSystemIdx].content === 'string'
-        ? messagesToSend[existingSystemIdx].content
-        : ''
-      if (!currentSystemContent.includes('RUNTIME INFORMATION')) {
-        messagesToSend[existingSystemIdx].content = `${currentSystemContent}\n\n${runtimeContext}`
-      }
-    } else {
-      messagesToSend = [
-        {
-          role: 'system',
-          content: `${BASE_SYSTEM_PROMPT}\n\n${runtimeContext}`,
-        },
-        ...messagesToSend,
-      ]
-    }
-
-    if (isRegenerate) {
-      console.log(`[CHAT] Regeneration started\nconversation.id:\n${conversationId}`)
-    } else if (isRetry) {
-      console.log(`[CHAT] Retry generation\nconversation.id:\n${conversationId}`)
-    } else {
-      console.log(`[CHAT] Generation started\nconversation.id:\n${conversationId}`)
-    }
-
-    // 5. Call AI provider stream through service layer
+    // 4. Call AI provider stream through service layer
     const stream = aiService.stream({
       model: selectedModel,
       messages: messagesToSend,
@@ -318,48 +111,20 @@ export async function POST(req: Request) {
     let fullAssistantText = ''
     let finishReason: AIFinishReason | undefined
     let hasSavedAssistantMessage = false
-    let isAborted = false
     const encoder = new TextEncoder()
     const iterator = stream[Symbol.asyncIterator]()
-
-    // Track client disconnection / abort via request.signal
-    const abortHandler = () => {
-      if (!isAborted) {
-        isAborted = true
-        console.log(`[CHAT] Generation aborted by user\nconversation.id:\n${conversationId}`)
-      }
-    }
-    req.signal.addEventListener('abort', abortHandler)
 
     const readableStream = new ReadableStream({
       async pull(controller) {
         try {
-          if (req.signal.aborted || isAborted) {
-            req.signal.removeEventListener('abort', abortHandler)
-            if (iterator.return) {
-              await iterator.return()
-            }
-            controller.close()
-            return
-          }
-
           const { value, done } = await iterator.next()
 
           if (done) {
-            req.signal.removeEventListener('abort', abortHandler)
             controller.close()
-            console.log('[CHAT] Generation completed')
 
             // Save assistant final response
             if (!hasSavedAssistantMessage && fullAssistantText.trim().length > 0) {
               hasSavedAssistantMessage = true
-              let assistantStatus = 'completed'
-              if (isRegenerate) {
-                assistantStatus = 'regenerated'
-              } else if (isRetry) {
-                assistantStatus = 'retry'
-              }
-
               const savedAiMsg = await saveSupabaseMessage(
                 supabase,
                 conversationId,
@@ -368,20 +133,13 @@ export async function POST(req: Request) {
                 selectedModel,
                 { 
                   finishReason: finishReason || 'stop', 
-                  status: assistantStatus,
+                  status: 'completed',
                   hasKnowledge,
                   sources: ragSources,
                 }
               )
               if (!savedAiMsg) {
                 console.error('[API/Chat] Failed to persist assistant message:', { conversationId, selectedModel })
-              }
-
-              // Update metadata.vision_processing for processed images
-              if (processedImageAttachmentIds.length > 0) {
-                markAttachmentsAsVisionProcessed(processedImageAttachmentIds, selectedModel).catch(err => {
-                  console.warn('[Vision] Could not update attachment vision metadata:', err)
-                })
               }
 
               // Background auto-title generation if new chat
@@ -419,17 +177,11 @@ export async function POST(req: Request) {
             }
           }
         } catch (streamErr) {
-          req.signal.removeEventListener('abort', abortHandler)
           console.error('[API/Chat] Streaming pull error:', streamErr)
           controller.error(streamErr)
         }
       },
       async cancel() {
-        if (!isAborted) {
-          isAborted = true
-          console.log(`[CHAT] Generation aborted by user\nconversation.id:\n${conversationId}`)
-        }
-        req.signal.removeEventListener('abort', abortHandler)
         if (iterator.return) {
           await iterator.return()
         }
@@ -440,7 +192,7 @@ export async function POST(req: Request) {
               supabase,
               conversationId,
               'assistant',
-              `${fullAssistantText.trim()} [stopped]`,
+              fullAssistantText,
               selectedModel,
               { status: 'aborted', hasKnowledge, sources: ragSources }
             )
