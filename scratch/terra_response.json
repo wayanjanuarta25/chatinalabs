@@ -1,0 +1,21 @@
+{
+  "id": "resp_069fcbe0a3be405c016ab17631311887d088b1935c35b3778c",
+  "object": "chat.completion",
+  "created": 1790015025,
+  "model": "gpt-5.6-terra",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Berikut prompt siap pakai untuk membuat cover TikTok ukuran **9:16 (1080×1920)**:\n\n**Prompt gambar:**\n\n> Desain cover TikTok vertikal 9:16 bertema kebersamaan TNI dan masyarakat Indonesia. Menampilkan beberapa prajurit TNI berseragam loreng berdiri berdampingan dengan warga dari berbagai latar belakang—petani, nelayan, pelajar, tenaga kesehatan, dan anak-anak—dalam suasana hangat penuh semangat gotong royong. Latar belakang bendera Merah Putih berkibar lembut dengan cahaya matahari pagi, nuansa merah, putih, dan hijau zaitun yang tegas dan sinematik. Tambahkan teks besar, jelas, dan modern di bagian tengah bawah: **“TNI BERSAMA RAKYAT”**. Gunakan font sans-serif tebal warna putih dengan outline atau bayangan hitam agar terbaca jelas. Komposisi heroik, realistis, profesional, high contrast, detail tinggi, tanpa logo atau lambang resmi, ruang aman untuk teks TikTok.\n\n**Saran tata letak teks:**\n- Judul: **TNI BERSAMA RAKYAT**\n- Posisi: tengah bawah, jangan terlalu dekat dengan bagian bawah layar\n- Warna: putih dengan garis tepi hitam/merah tua\n- Tambahan kecil opsional: *“Kuat dalam Kebersamaan”*\n\nJika ingin, saya juga bisa buatkan versi cover dengan gaya **lebih formal, lebih cinematic, atau lebih viral/teks besar ala TikTok**."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 184,
+    "completion_tokens": 538,
+    "total_tokens": 722
+  }
+}

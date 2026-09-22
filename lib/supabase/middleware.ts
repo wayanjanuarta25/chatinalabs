@@ -34,15 +34,8 @@ export async function updateSession(request: NextRequest) {
 
   const { pathname } = request.nextUrl
 
-  // Root redirect optimization
-  if (pathname === '/') {
-    const url = request.nextUrl.clone()
-    url.pathname = user ? '/chat' : '/login'
-    return NextResponse.redirect(url)
-  }
-
   const isAuthRoute = pathname.startsWith('/login') || pathname.startsWith('/register')
-  const isProtected = pathname.startsWith('/chat') || pathname.startsWith('/knowledge')
+  const isProtected = pathname.startsWith('/chat') || pathname.startsWith('/knowledge') || pathname.startsWith('/admin')
 
   // Protected route enforcement
   if (!user && isProtected) {

@@ -1,8 +1,14 @@
 export type AIRole = 'system' | 'user' | 'assistant'
 
+export type AIMessageContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }
+
+export type AIMessageContent = string | AIMessageContentPart[]
+
 export interface AIMessage {
   role: AIRole
-  content: string
+  content: AIMessageContent
   name?: string
 }
 

@@ -29,13 +29,14 @@ export function createRAGPrompt(params: {
   if (!context.hasKnowledge || !context.contextBlock) {
     const baseSystem = systemPrompt || DEFAULT_FALLBACK_SYSTEM_PROMPT
     const cleanHistory = history.filter(m => m.role !== 'system')
+    const lastMsg = cleanHistory[cleanHistory.length - 1]
+    const lastContent = typeof lastMsg?.content === 'string' ? lastMsg.content : ''
+    const isDuplicate = lastContent === userQuery || (lastMsg?.role === 'user' && typeof lastMsg?.content !== 'string')
 
     return [
       { role: 'system', content: baseSystem },
       ...cleanHistory,
-      ...(cleanHistory[cleanHistory.length - 1]?.content === userQuery
-        ? []
-        : [{ role: 'user' as const, content: userQuery }]),
+      ...(isDuplicate ? [] : [{ role: 'user' as const, content: userQuery }]),
     ]
   }
 
@@ -44,12 +45,13 @@ export function createRAGPrompt(params: {
   const augmentedSystemPrompt = `${baseSystem}\n\n${context.contextBlock}`
 
   const cleanHistory = history.filter(m => m.role !== 'system')
+  const lastMsg = cleanHistory[cleanHistory.length - 1]
+  const lastContent = typeof lastMsg?.content === 'string' ? lastMsg.content : ''
+  const isDuplicate = lastContent === userQuery || (lastMsg?.role === 'user' && typeof lastMsg?.content !== 'string')
 
   return [
     { role: 'system', content: augmentedSystemPrompt },
     ...cleanHistory,
-    ...(cleanHistory[cleanHistory.length - 1]?.content === userQuery
-      ? []
-      : [{ role: 'user' as const, content: userQuery }]),
+    ...(isDuplicate ? [] : [{ role: 'user' as const, content: userQuery }]),
   ]
 }

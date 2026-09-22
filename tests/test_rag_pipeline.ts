@@ -80,7 +80,7 @@ async function runRAGPipelineTests() {
 
     assert(augmentedMessages.length >= 3, 'createRAGPrompt generates full conversation array')
     assert(augmentedMessages[0].role === 'system', 'First message is system message')
-    assert(augmentedMessages[0].content.includes('Encryption at rest'), 'System message includes knowledge context')
+    assert((augmentedMessages[0].content as string).includes('Encryption at rest'), 'System message includes knowledge context')
     assert(augmentedMessages[augmentedMessages.length - 1].content === 'What encryption is used?', 'Latest user query appended')
 
     // Fallback mode (no knowledge)
@@ -91,7 +91,7 @@ async function runRAGPipelineTests() {
     })
 
     assert(fallbackMessages.length === 2, 'Fallback mode creates 2 messages (system + user)')
-    assert(!fallbackMessages[0].content.includes('Knowledge Base Context'), 'Fallback does not contain knowledge block')
+    assert(!(fallbackMessages[0].content as string).includes('Knowledge Base Context'), 'Fallback does not contain knowledge block')
   } catch (err) {
     console.error('[FAIL] createRAGPrompt test failed:', err)
     failed++
@@ -207,7 +207,7 @@ async function runRAGPipelineTests() {
 
     assert(fallbackResult.hasKnowledge === false, 'Fallback triggered when no chunks match')
     assert(fallbackResult.sources.length === 0, 'No sources returned in fallback mode')
-    assert(!fallbackResult.messages[0].content.includes('Workspace Knowledge Base Context'), 'Prompt uses fallback mode')
+    assert(!(fallbackResult.messages[0].content as string).includes('Workspace Knowledge Base Context'), 'Prompt uses fallback mode')
   } catch (err) {
     console.error('[FAIL] RAGService test failed:', err)
     failed++

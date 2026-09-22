@@ -15,6 +15,7 @@ export type Database = {
           email: string | null
           full_name: string | null
           avatar_url: string | null
+          role: 'user' | 'admin' | 'super_admin'
           created_at: string
           updated_at: string
         }
@@ -23,6 +24,7 @@ export type Database = {
           email?: string | null
           full_name?: string | null
           avatar_url?: string | null
+          role?: 'user' | 'admin' | 'super_admin'
           created_at?: string
           updated_at?: string
         }
@@ -31,6 +33,7 @@ export type Database = {
           email?: string | null
           full_name?: string | null
           avatar_url?: string | null
+          role?: 'user' | 'admin' | 'super_admin'
           created_at?: string
           updated_at?: string
         }
@@ -237,6 +240,60 @@ export type Database = {
           }
         ]
       }
+      message_attachments: {
+        Row: {
+          id: string
+          message_id: string
+          workspace_id: string
+          file_name: string
+          mime_type: string
+          file_size: number | null
+          storage_path: string
+          attachment_type: 'image' | 'document' | string
+          metadata: Json
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          message_id: string
+          workspace_id: string
+          file_name: string
+          mime_type: string
+          file_size?: number | null
+          storage_path: string
+          attachment_type: 'image' | 'document' | string
+          metadata?: Json
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          message_id?: string
+          workspace_id?: string
+          file_name?: string
+          mime_type?: string
+          file_size?: number | null
+          storage_path?: string
+          attachment_type?: 'image' | 'document' | string
+          metadata?: Json
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "message_attachments_message_id_fkey"
+            columns: ["message_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "message_attachments_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
       ai_models: {
         Row: {
           id: string
@@ -314,11 +371,14 @@ export type Database = {
       documents: {
         Row: {
           id: string
-          workspace_id: string | null
+          workspace_id: string
           knowledge_base_id: string
           title: string
           filename: string | null
+          mime_type: string | null
+          file_size: number | null
           storage_path: string | null
+          status: string
           source_type: string
           source_url: string | null
           content: string | null
@@ -328,18 +388,21 @@ export type Database = {
           token_count: number | null
           chunk_count: number | null
           file_size_bytes: number | null
-          mime_type: string | null
           metadata: Json
+          uploaded_by: string | null
           created_at: string
           updated_at: string
         }
         Insert: {
           id?: string
-          workspace_id?: string | null
+          workspace_id?: string
           knowledge_base_id: string
-          title: string
+          title?: string
           filename?: string | null
+          mime_type?: string | null
+          file_size?: number | null
           storage_path?: string | null
+          status?: string
           source_type?: string
           source_url?: string | null
           content?: string | null
@@ -349,18 +412,21 @@ export type Database = {
           token_count?: number | null
           chunk_count?: number | null
           file_size_bytes?: number | null
-          mime_type?: string | null
           metadata?: Json
+          uploaded_by?: string | null
           created_at?: string
           updated_at?: string
         }
         Update: {
           id?: string
-          workspace_id?: string | null
+          workspace_id?: string
           knowledge_base_id?: string
           title?: string
           filename?: string | null
+          mime_type?: string | null
+          file_size?: number | null
           storage_path?: string | null
+          status?: string
           source_type?: string
           source_url?: string | null
           content?: string | null
@@ -370,8 +436,8 @@ export type Database = {
           token_count?: number | null
           chunk_count?: number | null
           file_size_bytes?: number | null
-          mime_type?: string | null
           metadata?: Json
+          uploaded_by?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -450,6 +516,7 @@ export type Database = {
         Row: {
           id: string
           document_id: string
+          workspace_id: string
           knowledge_base_id: string
           chunk_index: number
           content: string
@@ -464,7 +531,8 @@ export type Database = {
         Insert: {
           id?: string
           document_id: string
-          knowledge_base_id: string
+          workspace_id?: string
+          knowledge_base_id?: string
           chunk_index: number
           content: string
           token_count?: number | null
@@ -478,6 +546,7 @@ export type Database = {
         Update: {
           id?: string
           document_id?: string
+          workspace_id?: string
           knowledge_base_id?: string
           chunk_index?: number
           content?: string
@@ -498,10 +567,90 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "document_chunks_knowledge_base_id_fkey"
-            columns: ["knowledge_base_id"]
+            foreignKeyName: "document_chunks_workspace_id_fkey"
+            columns: ["workspace_id"]
             isOneToOne: false
-            referencedRelation: "knowledge_bases"
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      embeddings: {
+        Row: {
+          id: string
+          chunk_id: string
+          workspace_id: string
+          embedding: string
+          model: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          chunk_id: string
+          workspace_id: string
+          embedding: string
+          model?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          chunk_id?: string
+          workspace_id?: string
+          embedding?: string
+          model?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "embeddings_chunk_id_fkey"
+            columns: ["chunk_id"]
+            isOneToOne: false
+            referencedRelation: "document_chunks"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "embeddings_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      audit_logs: {
+        Row: {
+          id: string
+          actor_id: string | null
+          action: string
+          target_type: string
+          target_id: string | null
+          metadata: Json
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          actor_id?: string | null
+          action: string
+          target_type: string
+          target_id?: string | null
+          metadata?: Json
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          actor_id?: string | null
+          action?: string
+          target_type?: string
+          target_id?: string | null
+          metadata?: Json
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "audit_logs_actor_id_fkey"
+            columns: ["actor_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
             referencedColumns: ["id"]
           }
         ]
@@ -516,6 +665,23 @@ export type Database = {
           _workspace_id: string
         }
         Returns: boolean
+      }
+      is_platform_admin: {
+        Args: Record<PropertyKey, never>
+        Returns: boolean
+      }
+      get_platform_analytics: {
+        Args: Record<PropertyKey, never>
+        Returns: Json
+      }
+      log_audit_event: {
+        Args: {
+          p_action: string
+          p_target_type: string
+          p_target_id?: string | null
+          p_metadata?: Json
+        }
+        Returns: string
       }
       match_document_chunks: {
         Args: {

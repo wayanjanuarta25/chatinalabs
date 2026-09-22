@@ -12,6 +12,9 @@ interface EmptyStateProps {
 
 export function EmptyState({ onSendMessage, isLoading }: EmptyStateProps) {
   const sendMessage = useChatStore(s => s.sendMessage)
+  const stopGeneration = useChatStore(s => s.stopGeneration)
+  const isGenerating = useChatStore(s => s.isGenerating)
+  const chatState = useChatStore(s => s.chatState)
 
   const handleCardClick = (card: SuggestionCard) => {
     sendMessage(card.prompt)
@@ -43,7 +46,12 @@ export function EmptyState({ onSendMessage, isLoading }: EmptyStateProps) {
 
         {/* Centered Composer */}
         <div className="w-full mb-4">
-          <MessageInput onSendMessage={onSendMessage} isLoading={isLoading} isCentered={true} />
+          <MessageInput 
+            onSendMessage={onSendMessage} 
+            onStopGenerate={stopGeneration}
+            isLoading={isLoading || chatState === 'thinking' || chatState === 'streaming' || isGenerating} 
+            isCentered={true} 
+          />
         </div>
 
         {/* 4 Suggestion Cards */}

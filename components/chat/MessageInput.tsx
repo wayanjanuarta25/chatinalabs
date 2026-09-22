@@ -4,14 +4,21 @@ import { useRef, useState, useEffect } from 'react'
 import { 
   ArrowUp, 
   Plus, 
-  FileText,
-  Image as ImageIcon,
-  Link2,
-  X
+  Square,
+  AlertCircle,
+  X,
+  Mic,
+  Sparkles
 } from 'lucide-react'
+import { AttachmentPicker } from './AttachmentPicker'
+import { AttachmentPreview, PendingAttachment } from './AttachmentPreview'
+import { UploadProgress } from './UploadProgress'
+import { ModelSelectorDropdown } from './ModelSelectorDropdown'
+import { validateAttachment } from '@/lib/attachments/validation'
 
 interface MessageInputProps {
-  onSendMessage: (content: string) => void
+  onSendMessage: (content: string, files?: File[]) => Promise<{ success: boolean; error?: string; failedFileName?: string } | void> | void
+  onStopGenerate?: () => void
   isLoading?: boolean
   disabled?: boolean
   isCentered?: boolean
@@ -19,16 +26,17 @@ interface MessageInputProps {
 
 export function MessageInput({ 
   onSendMessage, 
+  onStopGenerate,
   isLoading = false, 
   disabled = false, 
   isCentered = false 
 }: MessageInputProps) {
   const [content, setContent] = useState('')
-  const [isPlusMenuOpen, setIsPlusMenuOpen] = useState(false)
-  const [attachedFiles, setAttachedFiles] = useState<string[]>([])
+  const [isPickerOpen, setIsPickerOpen] = useState(false)
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([])
+  const [validationError, setValidationError] = useState<string | null>(null)
   
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const plusMenuRef = useRef<HTMLDivElement>(null)
 
   // Auto-resize textarea
   useEffect(() => {
@@ -38,16 +46,16 @@ export function MessageInput({
     }
   }, [content])
 
-  // Close plus popup on outside click
+  // Clean up object URLs on unmount
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (plusMenuRef.current && !plusMenuRef.current.contains(e.target as Node)) {
-        setIsPlusMenuOpen(false)
-      }
+    return () => {
+      pendingAttachments.forEach((att) => {
+        if (att.previewUrl) {
+          URL.revokeObjectURL(att.previewUrl)
+        }
+      })
     }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [])
+  }, [pendingAttachments])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -56,30 +64,96 @@ export function MessageInput({
     }
   }
 
-  const handleSend = () => {
-    const fullContent = attachedFiles.length > 0 
-      ? `[Attachment: ${attachedFiles.join(', ')}]\n\n${content}`.trim()
-      : content.trim()
+  const handleFilesSelected = (files: File[]) => {
+    setValidationError(null)
+    const existing = pendingAttachments.map(p => ({ name: p.file.name, size: p.file.size }))
+    const validNewAttachments: PendingAttachment[] = []
 
-    if (fullContent && !isLoading && !disabled) {
-      onSendMessage(fullContent)
-      setContent('')
-      setAttachedFiles([])
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto'
+    for (const file of files) {
+      const validation = validateAttachment(
+        file,
+        [...existing, ...validNewAttachments.map(v => ({ name: v.file.name, size: v.file.size }))]
+      )
+
+      if (!validation.valid || !validation.attachmentType) {
+        setValidationError(validation.error || 'Invalid file format')
+        continue
+      }
+
+      let previewUrl: string | undefined = undefined
+      if (validation.attachmentType === 'image') {
+        previewUrl = URL.createObjectURL(file)
+      }
+
+      validNewAttachments.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        file,
+        type: validation.attachmentType,
+        previewUrl,
+        status: 'idle',
+      })
+    }
+
+    if (validNewAttachments.length > 0) {
+      setPendingAttachments(prev => [...prev, ...validNewAttachments])
+    }
+  }
+
+  const handleRemoveAttachment = (id: string) => {
+    setPendingAttachments(prev => {
+      const item = prev.find(p => p.id === id)
+      if (item?.previewUrl) {
+        URL.revokeObjectURL(item.previewUrl)
+      }
+      return prev.filter(p => p.id !== id)
+    })
+  }
+
+  const handleRetryAttachment = (id: string) => {
+    setPendingAttachments(prev => prev.map(p => (p.id === id ? { ...p, status: 'idle', errorMessage: undefined } : p)))
+    setValidationError(null)
+    setTimeout(() => {
+      handleSend()
+    }, 50)
+  }
+
+  const handleSend = async () => {
+    const trimmed = content.trim()
+    const filesToSend = pendingAttachments.map(p => p.file)
+
+    if ((trimmed || filesToSend.length > 0) && !isLoading && !disabled) {
+      setValidationError(null)
+      if (filesToSend.length > 0) {
+        setPendingAttachments(prev => prev.map(p => ({ ...p, status: 'uploading' })))
+      }
+
+      try {
+        const result = await onSendMessage(trimmed, filesToSend.length > 0 ? filesToSend : undefined)
+
+        if (result && typeof result === 'object' && result.success === false) {
+          // Upload or message creation failed: do not clear user content or files
+          setValidationError(result.error || 'Failed to upload attachment')
+          setPendingAttachments(prev => prev.map(p => {
+            if (!result.failedFileName || p.file.name === result.failedFileName) {
+              return { ...p, status: 'error', errorMessage: result.error || 'Upload failed' }
+            }
+            return { ...p, status: 'idle' }
+          }))
+          return
+        }
+
+        // Success: clear composer state
+        setContent('')
+        setPendingAttachments([])
+        setValidationError(null)
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto'
+        }
+      } catch (err: any) {
+        setValidationError(err?.message || 'Failed to upload attachment')
+        setPendingAttachments(prev => prev.map(p => ({ ...p, status: 'error', errorMessage: err?.message || 'Upload failed' })))
       }
     }
-  }
-
-  const handleAddMockAttachment = (fileName: string) => {
-    if (!attachedFiles.includes(fileName)) {
-      setAttachedFiles(prev => [...prev, fileName])
-    }
-    setIsPlusMenuOpen(false)
-  }
-
-  const handleRemoveAttachment = (name: string) => {
-    setAttachedFiles(prev => prev.filter(f => f !== name))
   }
 
   return (
@@ -87,98 +161,110 @@ export function MessageInput({
       {/* Floating Rounded Composer */}
       <div className={`pointer-events-auto mx-auto max-w-[720px] rounded-[26px] border bg-white px-2 py-1.5 shadow-xs transition-all duration-200 dark:bg-[#212121] dark:shadow-xl ${!disabled ? 'border-zinc-200/90 focus-within:border-zinc-300 dark:border-zinc-800 dark:focus-within:border-zinc-700' : 'border-zinc-200 opacity-70 dark:border-transparent'}`}>
         
-        {/* Mock Attachment Previews */}
-        {attachedFiles.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 px-2 pt-1 pb-1.5">
-            {attachedFiles.map(file => (
-              <div 
-                key={file} 
-                className="flex items-center gap-1.5 rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
-              >
-                <FileText size={12} className="text-zinc-500" />
-                <span className="max-w-[140px] truncate font-medium">{file}</span>
-                <button 
-                  type="button" 
-                  onClick={() => handleRemoveAttachment(file)}
-                  className="rounded-full p-0.5 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-400 hover:text-zinc-600 cursor-pointer"
-                  title="Remove attachment"
-                  aria-label="Remove attachment"
-                >
-                  <X size={12} />
-                </button>
-              </div>
-            ))}
+        {/* Validation & Upload Error Notice */}
+        {validationError && (
+          <div className="mx-2 mt-1 mb-1.5 flex items-center justify-between rounded-xl bg-red-50/90 px-3 py-1.5 text-xs text-red-600 dark:bg-red-950/50 dark:text-red-400 border border-red-200/80 dark:border-red-900/60 animate-in fade-in-50 duration-150">
+            <div className="flex items-center gap-1.5 min-w-0 pr-2">
+              <AlertCircle size={13} className="shrink-0" />
+              <span className="truncate font-medium">{validationError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setValidationError(null)}
+              className="rounded-full p-0.5 hover:bg-red-100 dark:hover:bg-red-900/60 transition-colors"
+              title="Dismiss alert"
+            >
+              <X size={12} />
+            </button>
           </div>
         )}
 
-        {/* Compact Single-Row Layout matching ChatGPT */}
-        <div className="flex items-end gap-1.5">
-          {/* Left: Plus (+) Attachment Button */}
-          <div className="relative shrink-0 pb-0.5" ref={plusMenuRef}>
-            <button
-              type="button"
-              onClick={() => setIsPlusMenuOpen(!isPlusMenuOpen)}
-              className={`flex h-8 w-8 items-center justify-center rounded-full text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 cursor-pointer ${isPlusMenuOpen ? 'bg-zinc-200 text-zinc-900 dark:bg-zinc-800 dark:text-white' : ''}`}
-              title="Add attachment"
-              aria-label="Add attachment"
-            >
-              <Plus size={18} strokeWidth={2} className={`transition-transform duration-150 ${isPlusMenuOpen ? 'rotate-45' : ''}`} />
-            </button>
+        {/* Attachment Previews */}
+        <AttachmentPreview
+          attachments={pendingAttachments}
+          onRemove={handleRemoveAttachment}
+          onRetry={handleRetryAttachment}
+          disabled={isLoading || disabled}
+        />
 
-            {/* Attachment Popup */}
-            {isPlusMenuOpen && (
-              <div className="absolute bottom-11 left-0 z-30 w-48 rounded-2xl border border-zinc-200 bg-white p-1.5 shadow-xl backdrop-blur-lg dark:border-zinc-800 dark:bg-[#1a1a1a] text-zinc-900 dark:text-zinc-100 animate-in fade-in zoom-in-95 duration-100">
-                <button
-                  type="button"
-                  onClick={() => handleAddMockAttachment('document.pdf')}
-                  className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-white/[0.06] cursor-pointer"
-                >
-                  <FileText size={15} className="text-zinc-400" />
-                  <span>Upload Document</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleAddMockAttachment('image.png')}
-                  className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-white/[0.06] cursor-pointer"
-                >
-                  <ImageIcon size={15} className="text-zinc-400" />
-                  <span>Add Image</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleAddMockAttachment('reference-link.url')}
-                  className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-white/[0.06] cursor-pointer"
-                >
-                  <Link2 size={15} className="text-zinc-400" />
-                  <span>Web Link</span>
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Center: Auto-resizing Text Area */}
+        {/* Multi-Row Composer Layout matching ChatGPT / Reference UI */}
+        <div className="flex flex-col">
+          {/* Top: Auto-resizing Text Area */}
           <textarea
             ref={textareaRef}
             value={content}
             onChange={(e) => setContent(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={disabled ? "Start a new conversation..." : "Message chatINALabs..."}
-            className="block flex-1 min-h-[26px] max-h-[140px] w-full resize-none bg-transparent px-1.5 py-1 text-[14px] leading-5 text-zinc-900 outline-none placeholder:text-zinc-400 dark:text-zinc-100 dark:placeholder:text-zinc-500"
+            placeholder={disabled ? "Start a new conversation..." : "Send a Message..."}
+            className="block w-full min-h-[36px] max-h-[160px] resize-none bg-transparent px-2.5 pt-1.5 pb-1 text-[14px] leading-5 text-zinc-900 outline-none placeholder:text-zinc-400 dark:text-zinc-100 dark:placeholder:text-zinc-500"
             rows={1}
             disabled={isLoading || disabled}
           />
 
-          {/* Right: Send Button */}
-          <div className="shrink-0 pb-0.5">
-            <button
-              onClick={handleSend}
-              disabled={(!content.trim() && attachedFiles.length === 0) || isLoading || disabled}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-white shadow-xs transition-all hover:bg-black disabled:opacity-20 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200 cursor-pointer"
-              title="Send message (Enter)"
-              aria-label="Send message"
-            >
-              <ArrowUp size={16} strokeWidth={2.4} />
-            </button>
+          {/* Bottom Action Bar */}
+          <div className="flex items-center justify-between pt-1.5 px-0.5">
+            {/* Left Actions: Attachment & Tools */}
+            <div className="flex items-center gap-1">
+              <div className="relative shrink-0">
+                <button
+                  type="button"
+                  disabled={disabled || isLoading}
+                  onClick={() => setIsPickerOpen(!isPickerOpen)}
+                  className={`flex h-8 w-8 items-center justify-center rounded-full text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 cursor-pointer disabled:opacity-50 ${isPickerOpen ? 'bg-zinc-200 text-zinc-900 dark:bg-zinc-800 dark:text-white' : ''}`}
+                  title="Add document or image attachment"
+                  aria-label="Add attachment"
+                >
+                  <Plus size={18} strokeWidth={2} className={`transition-transform duration-150 ${isPickerOpen ? 'rotate-45' : ''}`} />
+                </button>
+
+                {/* Attachment Picker Menu */}
+                <AttachmentPicker
+                  isOpen={isPickerOpen}
+                  onClose={() => setIsPickerOpen(false)}
+                  onFilesSelected={handleFilesSelected}
+                  disabled={disabled || isLoading}
+                />
+              </div>
+            </div>
+
+            {/* Right Actions: Model Selector Pill, Mic, and Send/Stop Button */}
+            <div className="flex items-center gap-2">
+              <ModelSelectorDropdown placement={isCentered ? 'bottom' : 'top'} />
+
+              {/* Microphone Button */}
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center rounded-full text-zinc-400 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+                title="Voice dictation"
+                aria-label="Voice dictation"
+              >
+                <Mic size={17} />
+              </button>
+
+              {/* Send or Stop Button */}
+              {isLoading ? (
+                <button
+                  type="button"
+                  onClick={onStopGenerate}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-white shadow-xs transition-all hover:bg-black dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200 cursor-pointer animate-in fade-in zoom-in-90 duration-150"
+                  title="Stop generation"
+                  aria-label="Stop generation"
+                >
+                  <Square size={13} fill="currentColor" strokeWidth={0} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleSend}
+                  disabled={(!content.trim() && pendingAttachments.length === 0) || disabled}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-white shadow-xs transition-all hover:bg-black disabled:opacity-20 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200 cursor-pointer transition-transform active:scale-95"
+                  title="Send message (Enter)"
+                  aria-label="Send message"
+                >
+                  <ArrowUp size={16} strokeWidth={2.4} />
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>

@@ -15,13 +15,13 @@ export default async function LoginPage({
       <div className="w-full max-w-sm">
         {/* Brand Header */}
         <div className="mb-8 flex flex-col items-center text-center">
-          <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-2xl bg-white p-1.5 shadow-sm dark:bg-zinc-800">
+          <div className="mb-3 flex items-center justify-center">
             <Image
               src="/logo-ci.png"
-              alt="chatINALabs"
-              width={32}
-              height={32}
-              className="object-contain"
+              alt="ChatLabs.id"
+              width={48}
+              height={48}
+              className="h-12 w-12 object-contain"
               priority
             />
           </div>
@@ -29,7 +29,7 @@ export default async function LoginPage({
             Welcome back
           </h1>
           <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-            Sign in to chatINALabs AI to continue
+            Sign in to ChatLabs.id to continue
           </p>
         </div>
 

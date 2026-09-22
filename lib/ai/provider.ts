@@ -23,7 +23,9 @@ export class SimulatedProvider implements AIProvider {
 
   async generate(request: AIRequest): Promise<AIResponse> {
     const lastMessage = request.messages[request.messages.length - 1]
-    const prompt = lastMessage?.content || ''
+    const prompt = typeof lastMessage?.content === 'string' 
+      ? lastMessage.content 
+      : (lastMessage?.content?.find(p => p.type === 'text') as any)?.text || ''
     const content = generateSimulatedReply(prompt)
 
     return {
@@ -37,7 +39,9 @@ export class SimulatedProvider implements AIProvider {
 
   async *stream(request: AIRequest): AsyncIterable<AIStreamChunk> {
     const lastMessage = request.messages[request.messages.length - 1]
-    const prompt = lastMessage?.content || ''
+    const prompt = typeof lastMessage?.content === 'string' 
+      ? lastMessage.content 
+      : (lastMessage?.content?.find(p => p.type === 'text') as any)?.text || ''
     const fullReply = generateSimulatedReply(prompt)
 
     yield* createStreamFromText(fullReply, 2, 15)

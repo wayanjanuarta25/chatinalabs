@@ -16,6 +16,8 @@ import {
   deleteSupabaseConversation,
   updateMessageFeedback,
 } from '@/lib/supabase/queries'
+import { uploadAttachmentFile } from '@/lib/attachments/upload'
+import type { MessageAttachment } from './dummyData'
 
 import { consumeTextStream } from '@/lib/consume-text-stream'
 
@@ -47,12 +49,15 @@ interface ChatStore {
   selectedModel: string
   chatState: 'idle' | 'thinking' | 'streaming' | 'error'
   streamingContent: string
+  abortController: AbortController | null
+  isGenerating: boolean
   isLoadingConversations: boolean
   isLoadingMessages: boolean
   isSearchModalOpen: boolean
   isModelSelectorOpen: boolean
   error: string | null
   lastFailedMessage: { conversationId: string; content: string } | null
+  lastFailedMessageId: string | null
 
   // Getters
   getActiveConversation: () => Conversation | undefined
@@ -62,13 +67,15 @@ interface ChatStore {
   loadConversations: () => Promise<void>
   createNewChat: () => Promise<void>
   selectConversation: (id: string | null) => Promise<void>
-  sendMessage: (content: string) => Promise<void>
-  regenerateResponse: () => Promise<void>
+  sendMessage: (content: string, files?: File[]) => Promise<{ success: boolean; error?: string; failedFileName?: string } | void>
+  stopGeneration: () => void
+  regenerateResponse: (targetMessageId?: string) => Promise<void>
+  retryLastMessage: () => Promise<void>
+  retryFailedGeneration: (failedMessageId?: string) => Promise<void>
   renameConversation: (id: string, newTitle: string) => Promise<void>
   deleteConversation: (id: string) => Promise<void>
   toggleFeedback: (messageId: string, type: 'like' | 'dislike') => Promise<void>
   copyMessage: (content: string) => Promise<boolean>
-  retryLastMessage: () => Promise<void>
   clearError: () => void
 
   // UI state toggles
@@ -80,18 +87,61 @@ interface ChatStore {
 
 let streamingTimer: NodeJS.Timeout | null = null
 
+function parseGeneratedAttachment(response: Response): import('./dummyData').MessageAttachment[] | undefined {
+  const header = response.headers.get('X-Generated-Attachment')
+  if (!header) return undefined
+  try {
+    const raw = JSON.parse(decodeURIComponent(header))
+    return [raw]
+  } catch (err) {
+    console.warn('[useChatStore] Failed parsing X-Generated-Attachment header:', err)
+    return undefined
+  }
+}
+
+async function syncConversationFromDatabase(conversationId: string, set: (fn: (state: ChatStore) => Partial<ChatStore>) => void) {
+  try {
+    const supabase = createClient()
+    const dbMessages = await fetchConversationMessages(supabase, conversationId)
+    if (dbMessages && dbMessages.length > 0) {
+      const mapped: Message[] = dbMessages.map(m => ({
+        id: m.id,
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+        createdAt: formatDisplayTime(m.created_at),
+        feedback: (m.metadata as Record<string, unknown>)?.feedback as 'like' | 'dislike' | null,
+        metadata: (m.metadata as Record<string, unknown>) || undefined,
+        model: ((m.metadata as Record<string, unknown>)?.model as string) || undefined,
+        sources: (m.metadata as Record<string, unknown>)?.sources as Message['sources'],
+        hasKnowledge: Boolean((m.metadata as Record<string, unknown>)?.hasKnowledge),
+        attachments: (m.message_attachments as unknown as import('./dummyData').MessageAttachment[]) || undefined,
+      }))
+      set(state => ({
+        conversations: state.conversations.map(c => 
+          c.id === conversationId ? { ...c, messages: mapped } : c
+        )
+      }))
+    }
+  } catch (err) {
+    console.warn('[useChatStore] Background sync failed:', err)
+  }
+}
+
 export const useChatStore = create<ChatStore>((set, get) => ({
   conversations: [],
   activeConversationId: null,
   selectedModel: AVAILABLE_MODELS[0].id,
   chatState: 'idle',
   streamingContent: '',
+  abortController: null,
+  isGenerating: false,
   isLoadingConversations: false,
   isLoadingMessages: false,
   isSearchModalOpen: false,
   isModelSelectorOpen: false,
   error: null,
   lastFailedMessage: null,
+  lastFailedMessageId: null,
 
   getActiveConversation: () => {
     const { conversations, activeConversationId } = get()
@@ -171,8 +221,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         createdAt: formatDisplayTime(m.created_at),
         feedback: (m.metadata as Record<string, unknown>)?.feedback as 'like' | 'dislike' | null,
         metadata: (m.metadata as Record<string, unknown>) || undefined,
+        model: ((m.metadata as Record<string, unknown>)?.model as string) || undefined,
         sources: (m.metadata as Record<string, unknown>)?.sources as Message['sources'],
         hasKnowledge: Boolean((m.metadata as Record<string, unknown>)?.hasKnowledge),
+        attachments: (m.message_attachments as unknown as import('./dummyData').MessageAttachment[]) || undefined,
       }))
 
       set(state => ({
@@ -292,14 +344,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
   },
 
-  sendMessage: async (content: string) => {
+  sendMessage: async (content: string, files?: File[]) => {
     const trimmed = content.trim()
-    if (!trimmed || get().chatState === 'thinking' || get().chatState === 'streaming') return
+    const hasFiles = Boolean(files && files.length > 0)
+    if ((!trimmed && !hasFiles) || get().chatState === 'thinking' || get().chatState === 'streaming') return
 
     const supabase = createClient()
     let currentConvId = get().activeConversationId
     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    const derivedTitle = trimmed.length > 36 ? trimmed.slice(0, 36) + '...' : trimmed
+    const titleText = trimmed || (hasFiles && files![0] ? files![0].name : 'New Chat')
+    const derivedTitle = titleText.length > 36 ? titleText.slice(0, 36) + '...' : titleText
 
     // If starting a fresh chat without prior row, create it in Supabase
     if (!currentConvId) {
@@ -349,13 +403,77 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }
     }
 
-    const tempUserId = `msg-u-${Date.now()}`
-    const userMessage: Message = {
-      id: tempUserId,
-      role: 'user',
-      content: trimmed,
-      createdAt: now,
+    const targetConvId = currentConvId
+    const userMessageId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `msg-u-${Date.now()}`
+    const finalContent = trimmed || (hasFiles ? `[Lampiran: ${files!.map(f => f.name).join(', ')}]` : '')
+
+    // Step A: If attachments present, save user message first and upload files
+    let uploadedAttachments: MessageAttachment[] = []
+    if (hasFiles) {
+      const savedUserMsg = await saveSupabaseMessage(
+        supabase,
+        targetConvId,
+        'user',
+        finalContent,
+        null,
+        undefined,
+        userMessageId,
+        userMessageId
+      )
+
+      if (!savedUserMsg) {
+        const errMsg = 'Failed to create message record before uploading attachments.'
+        set({ error: errMsg, chatState: 'error', isGenerating: false })
+        return { success: false, error: errMsg }
+      }
+
+      for (const file of files!) {
+        const res = await uploadAttachmentFile({
+          file,
+          conversationId: targetConvId,
+          messageId: userMessageId,
+        })
+
+        if (res.success && res.attachment) {
+          uploadedAttachments.push(res.attachment)
+        } else {
+          const uploadErr = res.error || `Upload failed for file: ${file.name}`
+          console.error(`[upload] Failed uploading attachment "${file.name}":`, uploadErr)
+
+          // Rollback: Remove any already-uploaded files for this failed attempt
+          if (uploadedAttachments.length > 0) {
+            const pathsToRemove = uploadedAttachments.map(a => a.storage_path)
+            await supabase.storage.from('chat-attachments').remove(pathsToRemove)
+          }
+
+          // Rollback: Delete message from Supabase (cascades to delete any partial attachment records)
+          await supabase.from('messages').delete().eq('id', userMessageId)
+
+          set({
+            error: uploadErr,
+            chatState: 'idle',
+            isGenerating: false,
+          })
+
+          return {
+            success: false,
+            error: uploadErr,
+            failedFileName: file.name,
+          }
+        }
+      }
     }
+
+    const userMessage: Message = {
+      id: userMessageId,
+      role: 'user',
+      content: finalContent,
+      createdAt: now,
+      attachments: uploadedAttachments.length > 0 ? uploadedAttachments : undefined,
+    }
+
+    const controller = new AbortController()
+    console.log(`[CHAT] Generation started\nconversation.id:\n${targetConvId}`)
 
     // Optimistically append user message & enter thinking state
     set(state => ({
@@ -366,11 +484,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       ),
       chatState: 'thinking',
       streamingContent: '',
+      abortController: controller,
+      isGenerating: true,
       error: null,
       lastFailedMessage: null,
     }))
 
-    const targetConvId = currentConvId
     const currentModelId = get().selectedModel
 
     try {
@@ -379,10 +498,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           conversationId: targetConvId,
-          content: trimmed,
+          content: finalContent,
           model: currentModelId,
-          clientMessageId: tempUserId,
+          clientMessageId: userMessageId,
         }),
+        signal: controller.signal,
       })
 
       if (!response.ok) {
@@ -406,17 +526,21 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         set({ streamingContent: accumulated })
       })
 
-      const assistantTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      const tempAiId = `msg-ai-${Date.now()}`
+      console.log('[CHAT] Generation completed')
 
+      const assistantTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      const assistantMessageId = response.headers.get('X-Assistant-Message-Id') || `msg-ai-${Date.now()}`
+      const generatedAttachments = parseGeneratedAttachment(response)
       const hasKnowledgeHeader = response.headers.get('X-Has-Knowledge') === 'true'
 
       const assistantMessage: Message = {
-        id: tempAiId,
+        id: assistantMessageId,
         role: 'assistant',
         content: fullReply,
         createdAt: assistantTime,
         hasKnowledge: hasKnowledgeHeader,
+        attachments: generatedAttachments,
+        model: currentModelId,
       }
 
       set(state => ({
@@ -427,17 +551,71 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         ),
         chatState: 'idle',
         streamingContent: '',
+        abortController: null,
+        isGenerating: false,
         error: null,
         lastFailedMessage: null,
       }))
+
+      syncConversationFromDatabase(targetConvId, set)
+
+      return { success: true }
     } catch (err: unknown) {
-      console.error('Error sending message to /api/chat:', err)
+      const isAbort =
+        (err instanceof DOMException && err.name === 'AbortError') ||
+        (err instanceof Error && err.name === 'AbortError') ||
+        (err as any)?.name === 'AbortError' ||
+        controller.signal.aborted
+
+      if (isAbort) {
+        console.log('[CHAT] Generation stopped by user')
+        console.log(`[CHAT] Generation aborted by user\nconversation.id:\n${targetConvId}`)
+
+        const partialContent = get().streamingContent
+        const assistantTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+
+        if (partialContent.trim().length > 0) {
+          const stoppedMessage: Message = {
+            id: `msg-ai-${Date.now()}`,
+            role: 'assistant',
+            content: `${partialContent.trim()} [stopped]`,
+            createdAt: assistantTime,
+          }
+
+          set(state => ({
+            conversations: state.conversations.map(c => 
+              c.id === targetConvId
+                ? { ...c, messages: [...c.messages, stoppedMessage] }
+                : c
+            ),
+            chatState: 'idle',
+            streamingContent: '',
+            abortController: null,
+            isGenerating: false,
+            error: null,
+            lastFailedMessage: null,
+          }))
+        } else {
+          set({
+            chatState: 'idle',
+            streamingContent: '',
+            abortController: null,
+            isGenerating: false,
+            error: null,
+            lastFailedMessage: null,
+          })
+        }
+        return
+      }
+
+      console.error('[CHAT] Streaming error:', err)
       const errorMsg = err instanceof Error ? err.message : 'Failed to communicate with AI server'
+      const errMessageId = `msg-err-${Date.now()}`
 
       const assistantErrMessage: Message = {
-        id: `msg-err-${Date.now()}`,
+        id: errMessageId,
         role: 'assistant',
-        content: `⚠️ Error: ${errorMsg}. You can try again or click regenerate.`,
+        content: `⚠️ Error: ${errorMsg}. You can try again or click retry.`,
         createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       }
 
@@ -449,26 +627,63 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         ),
         chatState: 'idle',
         streamingContent: '',
+        abortController: null,
+        isGenerating: false,
         error: errorMsg,
         lastFailedMessage: { conversationId: targetConvId, content: trimmed },
+        lastFailedMessageId: errMessageId,
       }))
     }
   },
 
-  regenerateResponse: async () => {
+  stopGeneration: () => {
+    const controller = get().abortController
+    if (controller) {
+      console.log('[CHAT] Generation stopped by user')
+      controller.abort()
+    }
+    set({
+      abortController: null,
+      isGenerating: false,
+    })
+  },
+
+  regenerateResponse: async (targetMessageId?: string) => {
     const active = get().getActiveConversation()
     if (!active || active.messages.length === 0 || get().chatState === 'thinking' || get().chatState === 'streaming') return
 
     const messages = [...active.messages]
-    const lastMsg = messages[messages.length - 1]
-    if (lastMsg.role !== 'assistant') return
 
-    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
-    if (!lastUserMsg) return
+    // Determine target assistant message to regenerate
+    let targetIndex = -1
+    if (targetMessageId) {
+      targetIndex = messages.findIndex(m => m.id === targetMessageId && m.role === 'assistant')
+    }
+    if (targetIndex === -1) {
+      if (messages[messages.length - 1]?.role === 'assistant') {
+        targetIndex = messages.length - 1
+      } else {
+        targetIndex = messages.map(m => m.role).lastIndexOf('assistant')
+      }
+    }
 
-    const trimmedMessages = messages.slice(0, -1)
+    if (targetIndex === -1) return
+
+    // Find preceding user prompt
+    const precedingUserMsg = [...messages.slice(0, targetIndex)].reverse().find(m => m.role === 'user')
+    if (!precedingUserMsg) return
+
+    // Remove old assistant message from state
+    const trimmedMessages = [
+      ...messages.slice(0, targetIndex),
+      ...messages.slice(targetIndex + 1),
+    ]
+
     const targetConvId = active.id
     const currentModelId = get().selectedModel
+
+    const controller = new AbortController()
+    console.log(`[CHAT] Regeneration started\nconversation.id:\n${targetConvId}`)
 
     set(state => ({
       conversations: state.conversations.map(c => 
@@ -476,7 +691,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       ),
       chatState: 'thinking',
       streamingContent: '',
+      abortController: controller,
+      isGenerating: true,
       error: null,
+      lastFailedMessage: null,
+      lastFailedMessageId: null,
     }))
 
     try {
@@ -485,9 +704,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           conversationId: targetConvId,
-          content: '',
+          content: precedingUserMsg.content,
           model: currentModelId,
+          isRegenerate: true,
         }),
+        signal: controller.signal,
       })
 
       if (!response.ok) {
@@ -511,11 +732,18 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         set({ streamingContent: accumulated })
       })
 
+      console.log('[CHAT] Generation completed')
+
+      const assistantMessageId = response.headers.get('X-Assistant-Message-Id') || `msg-ai-${Date.now()}`
+      const generatedAttachments = parseGeneratedAttachment(response)
+
       const assistantMessage: Message = {
-        id: `msg-ai-${Date.now()}`,
+        id: assistantMessageId,
         role: 'assistant',
         content: fullReply,
         createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        attachments: generatedAttachments,
+        model: currentModelId,
       }
 
       set(state => ({
@@ -526,16 +754,68 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         ),
         chatState: 'idle',
         streamingContent: '',
+        abortController: null,
+        isGenerating: false,
         error: null,
+        lastFailedMessage: null,
+        lastFailedMessageId: null,
       }))
+
+      syncConversationFromDatabase(targetConvId, set)
     } catch (err: unknown) {
-      console.error('Error regenerating response:', err)
+      const isAbort =
+        (err instanceof DOMException && err.name === 'AbortError') ||
+        (err instanceof Error && err.name === 'AbortError') ||
+        (err as any)?.name === 'AbortError' ||
+        controller.signal.aborted
+
+      if (isAbort) {
+        console.log('[CHAT] Generation stopped by user')
+        console.log(`[CHAT] Generation aborted by user\nconversation.id:\n${targetConvId}`)
+
+        const partialContent = get().streamingContent
+        const assistantTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+
+        if (partialContent.trim().length > 0) {
+          const stoppedMessage: Message = {
+            id: `msg-ai-${Date.now()}`,
+            role: 'assistant',
+            content: `${partialContent.trim()} [stopped]`,
+            createdAt: assistantTime,
+          }
+
+          set(state => ({
+            conversations: state.conversations.map(c => 
+              c.id === targetConvId
+                ? { ...c, messages: [...c.messages, stoppedMessage] }
+                : c
+            ),
+            chatState: 'idle',
+            streamingContent: '',
+            abortController: null,
+            isGenerating: false,
+            error: null,
+          }))
+        } else {
+          set({
+            chatState: 'idle',
+            streamingContent: '',
+            abortController: null,
+            isGenerating: false,
+            error: null,
+          })
+        }
+        return
+      }
+
+      console.error('[CHAT] Regeneration error:', err)
       const errorMsg = err instanceof Error ? err.message : 'Failed to regenerate response'
+      const errMessageId = `msg-err-${Date.now()}`
 
       const assistantErrMessage: Message = {
-        id: `msg-err-${Date.now()}`,
+        id: errMessageId,
         role: 'assistant',
-        content: `⚠️ Error: ${errorMsg}. Please try again.`,
+        content: `⚠️ Error: ${errorMsg}. You can try again or click retry.`,
         createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       }
 
@@ -547,7 +827,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         ),
         chatState: 'idle',
         streamingContent: '',
+        abortController: null,
+        isGenerating: false,
         error: errorMsg,
+        lastFailedMessage: { conversationId: targetConvId, content: precedingUserMsg.content },
+        lastFailedMessageId: errMessageId,
       }))
     }
   },
@@ -614,6 +898,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         role: 'assistant',
         content: fullReply,
         createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        model: currentModelId,
       }
 
       set(state => ({
@@ -686,11 +971,183 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   retryLastMessage: async () => {
-    const lastFailed = get().lastFailedMessage
-    if (lastFailed?.content) {
-      await get().sendMessage(lastFailed.content)
-    } else {
-      await get().regenerateResponse()
+    await get().retryFailedGeneration()
+  },
+
+  retryFailedGeneration: async (failedMessageId?: string) => {
+    const active = get().getActiveConversation()
+    if (!active || get().chatState === 'thinking' || get().chatState === 'streaming') return
+
+    const messages = [...active.messages]
+    const targetConvId = active.id
+    const currentModelId = get().selectedModel
+
+    // Determine content to retry
+    let promptContent = get().lastFailedMessage?.content
+    if (!promptContent) {
+      const lastUser = [...messages].reverse().find(m => m.role === 'user')
+      promptContent = lastUser?.content
+    }
+
+    if (!promptContent) return
+
+    // Clean up failed error message from messages list
+    const errId = failedMessageId || get().lastFailedMessageId
+    const cleanedMessages = errId
+      ? messages.filter(m => m.id !== errId)
+      : messages.filter(m => !m.content.startsWith('⚠️ Error:'))
+
+    const controller = new AbortController()
+    console.log(`[CHAT] Retry generation\nconversation.id:\n${targetConvId}`)
+
+    set(state => ({
+      conversations: state.conversations.map(c => 
+        c.id === targetConvId ? { ...c, messages: cleanedMessages } : c
+      ),
+      chatState: 'thinking',
+      streamingContent: '',
+      abortController: controller,
+      isGenerating: true,
+      error: null,
+      lastFailedMessage: null,
+      lastFailedMessageId: null,
+    }))
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversationId: targetConvId,
+          content: promptContent,
+          model: currentModelId,
+          isRetry: true,
+        }),
+        signal: controller.signal,
+      })
+
+      if (!response.ok) {
+        let errMessage = `Server error (${response.status})`
+        try {
+          const errData = await response.json()
+          if (errData.error) errMessage = errData.error
+        } catch {
+          // ignore
+        }
+        throw new Error(errMessage)
+      }
+
+      if (!response.body) {
+        throw new Error('No response stream received from server')
+      }
+
+      set({ chatState: 'streaming' })
+
+      const fullReply = await consumeTextStream(response.body, (accumulated) => {
+        set({ streamingContent: accumulated })
+      })
+
+      console.log('[CHAT] Generation completed')
+
+      const assistantMessageId = response.headers.get('X-Assistant-Message-Id') || `msg-ai-${Date.now()}`
+      const generatedAttachments = parseGeneratedAttachment(response)
+
+      const assistantMessage: Message = {
+        id: assistantMessageId,
+        role: 'assistant',
+        content: fullReply,
+        createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        attachments: generatedAttachments,
+        model: currentModelId,
+      }
+
+      set(state => ({
+        conversations: state.conversations.map(c => 
+          c.id === targetConvId
+            ? { ...c, messages: [...c.messages, assistantMessage] }
+            : c
+        ),
+        chatState: 'idle',
+        streamingContent: '',
+        abortController: null,
+        isGenerating: false,
+        error: null,
+        lastFailedMessage: null,
+        lastFailedMessageId: null,
+      }))
+
+      syncConversationFromDatabase(targetConvId, set)
+    } catch (err: unknown) {
+      const isAbort =
+        (err instanceof DOMException && err.name === 'AbortError') ||
+        (err instanceof Error && err.name === 'AbortError') ||
+        (err as any)?.name === 'AbortError' ||
+        controller.signal.aborted
+
+      if (isAbort) {
+        console.log('[CHAT] Generation stopped by user')
+        console.log(`[CHAT] Generation aborted by user\nconversation.id:\n${targetConvId}`)
+
+        const partialContent = get().streamingContent
+        const assistantTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+
+        if (partialContent.trim().length > 0) {
+          const stoppedMessage: Message = {
+            id: `msg-ai-${Date.now()}`,
+            role: 'assistant',
+            content: `${partialContent.trim()} [stopped]`,
+            createdAt: assistantTime,
+          }
+
+          set(state => ({
+            conversations: state.conversations.map(c => 
+              c.id === targetConvId
+                ? { ...c, messages: [...c.messages, stoppedMessage] }
+                : c
+            ),
+            chatState: 'idle',
+            streamingContent: '',
+            abortController: null,
+            isGenerating: false,
+            error: null,
+          }))
+        } else {
+          set({
+            chatState: 'idle',
+            streamingContent: '',
+            abortController: null,
+            isGenerating: false,
+            error: null,
+          })
+        }
+        return
+      }
+
+      console.error('[CHAT] Retry error:', err)
+      const errorMsg = err instanceof Error ? err.message : 'Failed to retry generation'
+      const newErrId = `msg-err-${Date.now()}`
+
+      const assistantErrMessage: Message = {
+        id: newErrId,
+        role: 'assistant',
+        content: `⚠️ Error: ${errorMsg}. You can click retry to try again.`,
+        createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      }
+
+      set(state => ({
+        conversations: state.conversations.map(c => 
+          c.id === targetConvId
+            ? { ...c, messages: [...c.messages, assistantErrMessage] }
+            : c
+        ),
+        chatState: 'idle',
+        streamingContent: '',
+        abortController: null,
+        isGenerating: false,
+        error: errorMsg,
+        lastFailedMessage: { conversationId: targetConvId, content: promptContent },
+        lastFailedMessageId: newErrId,
+      }))
     }
   },
 

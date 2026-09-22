@@ -14,7 +14,7 @@ const manrope = Manrope({
 });
 
 export const metadata: Metadata = {
-  title: "chatINALabs",
+  title: "ChatLabs.id",
   description: "Premium AI Assistant",
   icons: {
     icon: "/logo-ci.png",

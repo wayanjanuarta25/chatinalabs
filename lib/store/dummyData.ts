@@ -1,8 +1,23 @@
+export interface MessageAttachment {
+  id: string
+  message_id: string
+  workspace_id: string
+  file_name: string
+  mime_type: string
+  file_size: number
+  storage_path: string
+  attachment_type: 'image' | 'document'
+  metadata?: Record<string, unknown>
+  created_at: string
+  signedUrl?: string
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
   createdAt: string
+  model?: string
   feedback?: 'like' | 'dislike' | null
   metadata?: Record<string, unknown>
   sources?: Array<{
@@ -12,6 +27,7 @@ export interface Message {
     similarity: number
   }>
   hasKnowledge?: boolean
+  attachments?: MessageAttachment[]
 }
 
 export interface Conversation {
@@ -28,33 +44,53 @@ export interface ModelOption {
   name: string
   description: string
   badge?: string
+  provider?: 'openai'
+  category?: 'all' | 'gpt'
 }
 
 export const AVAILABLE_MODELS: ModelOption[] = [
   {
-    id: 'chatinalabs-ai',
-    name: 'chatINALabs AI',
-    description: 'Versatile, fast, and balanced for everyday tasks.',
-    badge: 'Default'
+    id: 'gpt-5.5',
+    name: 'GPT-5.5',
+    description: 'Powerful general knowledge and analytical reasoning model.',
+    provider: 'openai',
+    category: 'gpt',
   },
   {
-    id: 'chatinalabs-reasoning',
-    name: 'chatINALabs Reasoning',
-    description: 'Deep thought process for complex problem solving and math.',
-    badge: 'Thought'
+    id: 'gpt-5.6-sol',
+    name: 'GPT-5.6-sol',
+    description: 'Fast, intelligent, balanced model with high reasoning capability.',
+    provider: 'openai',
+    category: 'gpt',
   },
   {
-    id: 'chatinalabs-creative',
-    name: 'chatINALabs Creative',
-    description: 'Rich vocabulary and imagination for creative writing and ideation.',
-    badge: 'Creative'
+    id: 'gpt-5.6-terra',
+    name: 'GPT-5.6-terra',
+    description: 'Flagship multimodal & creative model with advanced prompt handling.',
+    provider: 'openai',
+    category: 'gpt',
   },
   {
-    id: 'chatinalabs-code',
-    name: 'chatINALabs Code',
-    description: 'Optimized for clean syntax, debugging, and software architecture.',
-    badge: 'Code'
-  }
+    id: 'gpt-5.6-luna',
+    name: 'GPT-5.6-luna',
+    description: 'Lightweight, ultra-fast model for quick responses and conversational tasks.',
+    provider: 'openai',
+    category: 'gpt',
+  },
+  {
+    id: 'gpt-5.4-mini',
+    name: 'GPT-5.4-mini',
+    description: 'Compact and efficient model for straightforward queries.',
+    provider: 'openai',
+    category: 'gpt',
+  },
+  {
+    id: 'gpt-6-astra',
+    name: 'GPT-6-astra',
+    description: 'Next-generation frontier intelligence model with extreme depth.',
+    provider: 'openai',
+    category: 'gpt',
+  },
 ]
 
 export interface SuggestionCard {

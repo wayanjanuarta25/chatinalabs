@@ -25,7 +25,10 @@ export function ChatWindow({ initialConversationId }: ChatWindowProps = {}) {
     chatState,
     streamingContent,
     sendMessage,
+    stopGeneration,
+    isGenerating,
     regenerateResponse,
+    retryFailedGeneration,
     editUserMessage,
     toggleFeedback,
     copyMessage,
@@ -82,13 +85,13 @@ export function ChatWindow({ initialConversationId }: ChatWindowProps = {}) {
     <div className="relative flex h-full flex-1 flex-col bg-[#f7f7f7] dark:bg-[#171717] overflow-hidden">
       {/* Top Header Bar */}
       <header className="absolute inset-x-0 top-0 z-10 flex h-13 items-center justify-between border-b border-transparent bg-[#f7f7f7]/85 px-3 sm:px-4 backdrop-blur-md dark:bg-[#171717]/85">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           {/* Mobile Sidebar Toggle Button */}
           {!isOpen && (
             <button
               type="button"
               onClick={toggleSidebar}
-              className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-zinc-200 hover:text-zinc-700 dark:hover:bg-[#252525] dark:hover:text-zinc-200 cursor-pointer md:hidden"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-zinc-200 hover:text-zinc-700 dark:hover:bg-[#252525] dark:hover:text-zinc-200 cursor-pointer md:hidden"
               title="Open sidebar"
               aria-label="Open sidebar"
             >
@@ -96,67 +99,12 @@ export function ChatWindow({ initialConversationId }: ChatWindowProps = {}) {
             </button>
           )}
 
-          {/* Model Selector Dropdown in Header */}
-          <div className="relative" ref={modelDropdownRef}>
-            <button
-              type="button"
-              onClick={() => setIsModelDropdownOpen(prev => !prev)}
-              className="flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-sm font-semibold text-zinc-800 transition-colors hover:bg-zinc-200/60 dark:text-zinc-100 dark:hover:bg-[#252525] cursor-pointer"
-              title="Select Model"
-            >
-              <span>{currentModel.name}</span>
-              <ChevronDown 
-                size={14} 
-                strokeWidth={2} 
-                className={`text-zinc-400 dark:text-zinc-500 transition-transform duration-150 ${isModelDropdownOpen ? 'rotate-180' : ''}`} 
-              />
-            </button>
-
-            {isModelDropdownOpen && (
-              <div className="absolute left-0 top-full mt-1.5 z-30 w-[245px] rounded-2xl border border-zinc-200/90 bg-white/95 p-1 shadow-xl backdrop-blur-md dark:border-zinc-800 dark:bg-[#1e1e1e]/95 text-zinc-900 dark:text-zinc-100 animate-in fade-in zoom-in-95 duration-100">
-                <div className="flex flex-col gap-0.5">
-                  {AVAILABLE_MODELS.map(model => {
-                    const isSelected = model.id === selectedModel
-                    return (
-                      <button
-                        key={model.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedModel(model.id)
-                          setIsModelDropdownOpen(false)
-                        }}
-                        className={`flex w-full items-center justify-between rounded-xl px-2.5 py-1.5 text-left transition-colors cursor-pointer ${
-                          isSelected 
-                            ? 'bg-zinc-100 dark:bg-white/[0.08]' 
-                            : 'hover:bg-zinc-50 dark:hover:bg-white/[0.04]'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0 pr-1">
-                          <div className="shrink-0 text-zinc-500">
-                            {renderModelIcon(model.id)}
-                          </div>
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[12.5px] font-medium text-zinc-900 dark:text-zinc-100">{model.name}</span>
-                              {model.badge && model.badge !== 'Default' && (
-                                <span className="rounded-full bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.2 text-[9px] font-normal text-zinc-500 border border-zinc-200/50 dark:border-zinc-700/50">
-                                  {model.badge}
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-[10.5px] text-zinc-400 dark:text-zinc-500 truncate max-w-[155px]">{model.description}</p>
-                          </div>
-                        </div>
-                        {isSelected && (
-                          <Check size={13} className="text-zinc-900 dark:text-white shrink-0 ml-1" />
-                        )}
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
+          {/* Conversation Title in Header (Hidden on new chat / empty state) */}
+          {activeConversation && messages.length > 0 && (
+            <h2 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200 truncate max-w-[220px] sm:max-w-[360px] md:max-w-[480px]">
+              {activeConversation.title}
+            </h2>
+          )}
         </div>
 
         {/* Header Right */}
@@ -182,11 +130,14 @@ export function ChatWindow({ initialConversationId }: ChatWindowProps = {}) {
                 id={message.id}
                 role={message.role}
                 content={message.content}
+                model={message.model || selectedModel}
                 feedback={message.feedback}
                 sources={message.sources}
                 hasKnowledge={message.hasKnowledge}
+                attachments={message.attachments}
                 isLast={isLast}
-                onRegenerate={isLast && message.role === 'assistant' ? regenerateResponse : undefined}
+                onRegenerate={message.role === 'assistant' ? () => regenerateResponse(message.id) : undefined}
+                onRetry={() => retryFailedGeneration(message.id)}
                 onEdit={message.role === 'user' ? (newContent) => editUserMessage(message.id, newContent) : undefined}
                 onFeedback={(type) => toggleFeedback(message.id, type)}
                 onCopy={(text) => copyMessage(text)}
@@ -197,17 +148,21 @@ export function ChatWindow({ initialConversationId }: ChatWindowProps = {}) {
           {/* Thinking Animation */}
           {chatState === 'thinking' && (
             <div className="flex w-full justify-center px-4 py-3 sm:px-6 md:py-4">
-              <div className="flex w-full max-w-[760px] gap-3 md:gap-4 justify-start">
-                <div className="shrink-0 pt-0.5">
-                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-white p-0.5 shadow-xs border border-zinc-200/60 dark:border-white/[0.08] dark:bg-zinc-800 overflow-hidden">
+              <div className="flex w-full max-w-[760px] flex-col justify-start">
+                <div className="flex items-center gap-2 mb-2 select-none">
+                  <div className="flex h-5 w-5 shrink-0 items-center justify-center">
                     <Image
                       src="/logo-ci.png"
-                      alt="chatINALabs"
-                      width={22}
-                      height={22}
-                      className="object-contain"
+                      alt="Inalabs AI"
+                      width={18}
+                      height={18}
+                      className="object-contain dark:invert"
+                      priority
                     />
                   </div>
+                  <span className="text-[13.5px] font-semibold text-zinc-900 dark:text-zinc-100 tracking-tight">
+                    Inalabs AI - {AVAILABLE_MODELS.find(m => m.id === selectedModel)?.name || selectedModel}
+                  </span>
                 </div>
                 <div className="flex items-center gap-1.5 pt-1 text-xs text-zinc-400 dark:text-zinc-500">
                   <span className="h-2 w-2 rounded-full bg-zinc-400 dark:bg-zinc-600 animate-bounce [animation-delay:-0.3s]" />
@@ -224,6 +179,7 @@ export function ChatWindow({ initialConversationId }: ChatWindowProps = {}) {
             <MessageBubble
               role="assistant"
               content={`${streamingContent} ▍`}
+              model={selectedModel}
               isLast={true}
             />
           )}
@@ -233,7 +189,8 @@ export function ChatWindow({ initialConversationId }: ChatWindowProps = {}) {
           {/* Bottom Floating Composer */}
           <MessageInput 
             onSendMessage={sendMessage} 
-            isLoading={chatState !== 'idle'} 
+            onStopGenerate={stopGeneration}
+            isLoading={chatState === 'thinking' || chatState === 'streaming' || isGenerating} 
           />
         </div>
       )}

@@ -76,16 +76,20 @@ export async function fetchUserConversations(
   return data || []
 }
 
+export type DBMessageWithAttachments = DBMessage & {
+  message_attachments?: Database['public']['Tables']['message_attachments']['Row'][]
+}
+
 /**
- * Fetch all messages in a conversation ordered chronologically.
+ * Fetch all messages in a conversation ordered chronologically with attachments.
  */
 export async function fetchConversationMessages(
   supabase: SupabaseClient<Database>,
   conversationId: string
-): Promise<DBMessage[]> {
+): Promise<DBMessageWithAttachments[]> {
   const { data, error } = await supabase
     .from('messages')
-    .select('*')
+    .select('*, message_attachments(*)')
     .eq('conversation_id', conversationId)
     .order('created_at', { ascending: true })
 
@@ -94,7 +98,7 @@ export async function fetchConversationMessages(
     return []
   }
 
-  return data || []
+  return (data as unknown as DBMessageWithAttachments[]) || []
 }
 
 /**
@@ -149,7 +153,8 @@ export async function saveSupabaseMessage(
   content: string,
   model?: string | null,
   metadata?: Record<string, unknown>,
-  clientMessageId?: string | null
+  clientMessageId?: string | null,
+  customMessageId?: string | null
 ): Promise<DBMessage | null> {
   const mergedMetadata: Record<string, unknown> = {
     ...(metadata || {}),
@@ -167,6 +172,7 @@ export async function saveSupabaseMessage(
     content,
     metadata: mergedMetadata as Database['public']['Tables']['messages']['Insert']['metadata'],
     ...(effectiveClientMsgId ? { client_message_id: effectiveClientMsgId } : {}),
+    ...(customMessageId ? { id: customMessageId } : {}),
   }
 
   const { data, error } = await supabase
