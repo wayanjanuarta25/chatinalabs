@@ -125,7 +125,21 @@ async function runMessagePersistenceTests() {
     console.log('[SKIP] SUPABASE_SERVICE_ROLE_KEY missing, skipping live DB test')
   } else {
     const liveClient = createClient<Database>(supabaseUrl, serviceRoleKey)
-    const targetConversationId = '636f50d9-44db-4dec-8288-c05dd849d88d'
+    
+    // Find active conversation or create temporary one
+    let targetConversationId: string = ''
+    const { data: existingConvs } = await liveClient.from('conversations').select('id').limit(1)
+    if (existingConvs && existingConvs.length > 0) {
+      targetConversationId = existingConvs[0].id
+    } else {
+      const { data: ws } = await liveClient.from('workspaces').select('id, owner_id').limit(1)
+      const { data: newC } = await liveClient.from('conversations').insert({
+        workspace_id: ws![0].id,
+        user_id: ws![0].owner_id,
+        title: 'Persistence Test Conversation',
+      }).select().single()
+      targetConversationId = newC!.id
+    }
 
     // Save User Message
     const userMsg = await saveSupabaseMessage(
