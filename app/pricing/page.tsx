@@ -99,10 +99,10 @@ export default async function PricingPage() {
                 </p>
               </div>
               <Link
-                href="/register"
+                href="/login"
                 className="inline-flex items-center gap-2 rounded-xl bg-white px-5 py-3 text-xs font-semibold text-zinc-900 shadow-sm transition-all hover:bg-zinc-100 active:scale-[0.98] dark:bg-zinc-900 dark:text-white dark:hover:bg-black cursor-pointer shrink-0"
               >
-                <span>Daftar & Berlangganan</span>
+                <span>Masuk & Berlangganan</span>
                 <ArrowRight size={14} />
               </Link>
             </div>

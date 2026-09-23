@@ -136,7 +136,7 @@ export function PricingSection({ isFullPage = false }: { isFullPage?: boolean })
               {/* Action Button */}
               <div className="pt-2">
                 <Link
-                  href="/register"
+                  href="/login"
                   className="group flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-zinc-900 via-zinc-800 to-zinc-900 py-3 text-xs sm:text-sm font-semibold text-white shadow-md transition-all hover:shadow-lg hover:scale-[1.01] active:scale-[0.99] dark:from-white dark:via-zinc-100 dark:to-white dark:text-zinc-900 cursor-pointer"
                 >
                   <span>Mulai Berlangganan Sekarang</span>

@@ -273,10 +273,10 @@ export default async function LimitsPage() {
             </p>
             <div className="mt-6 flex flex-col sm:flex-row items-center justify-center gap-3">
               <Link
-                href="/register"
+                href="/login"
                 className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-white px-6 py-3 text-xs sm:text-sm font-semibold text-zinc-900 shadow-sm hover:bg-zinc-100 dark:bg-zinc-900 dark:text-white dark:hover:bg-black cursor-pointer"
               >
-                <span>Mulai Sekarang Gratis</span>
+                <span>Mulai Sekarang</span>
                 <ArrowRight size={14} />
               </Link>
               <Link

@@ -1,7 +1,6 @@
 import Link from 'next/link'
 import Image from 'next/image'
-import { signup } from '@/app/login/actions'
-import { AlertCircle, ArrowRight } from 'lucide-react'
+import { AlertCircle, ArrowRight, UserX, ArrowLeft } from 'lucide-react'
 
 export default async function RegisterPage({
   searchParams,
@@ -12,10 +11,10 @@ export default async function RegisterPage({
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-[#f7f7f8] px-4 py-12 dark:bg-[#121212] sm:px-6">
-      <div className="w-full max-w-sm">
+      <div className="w-full max-w-md">
         {/* Brand Header */}
         <div className="mb-8 flex flex-col items-center text-center">
-          <div className="mb-3 flex items-center justify-center">
+          <Link href="/" className="mb-3 flex items-center justify-center">
             <Image
               src="/logo-ci.png"
               alt="ChatLabs.id"
@@ -24,99 +23,72 @@ export default async function RegisterPage({
               className="h-12 w-12 object-contain"
               priority
             />
-          </div>
+          </Link>
           <h1 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 sm:text-2xl">
-            Create your account
+            ChatLabs.id
           </h1>
           <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-            Start using ChatLabs.id today
+            Platform AI & Workspace Knowledge
           </p>
         </div>
 
-        {/* Error / Status Alert */}
+        {/* Message Alert if provided */}
         {message && (
-          <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-red-200/80 bg-red-50 p-3 text-xs text-red-800 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
-            <AlertCircle size={16} className="shrink-0 text-red-500" />
+          <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-amber-200/80 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200">
+            <AlertCircle size={16} className="shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
             <div className="leading-relaxed">{message}</div>
           </div>
         )}
 
-        {/* Form Container */}
-        <div className="rounded-2xl border border-zinc-200/80 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-[#1a1a1a]">
-          <form action={signup} className="flex flex-col gap-4">
-            <div className="flex flex-col gap-1.5">
-              <label 
-                htmlFor="fullName" 
-                className="text-xs font-medium text-zinc-700 dark:text-zinc-300"
-              >
-                Full Name
-              </label>
-              <input
-                id="fullName"
-                name="fullName"
-                type="text"
-                autoComplete="name"
-                placeholder="Alex Morgan"
-                required
-                className="w-full rounded-xl border border-zinc-300/80 bg-transparent px-3.5 py-2 text-sm text-zinc-900 outline-none transition-all placeholder:text-zinc-400 focus:border-zinc-500 focus:ring-2 focus:ring-zinc-400/20 dark:border-zinc-700 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
-              />
-            </div>
+        {/* Disabled State Card */}
+        <div className="rounded-2xl border border-zinc-200/80 bg-white p-6 sm:p-8 shadow-sm dark:border-zinc-800 dark:bg-[#1a1a1a] text-center">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-100/80 text-amber-600 dark:bg-amber-950/60 dark:text-amber-400">
+            <UserX size={24} />
+          </div>
 
-            <div className="flex flex-col gap-1.5">
-              <label 
-                htmlFor="email" 
-                className="text-xs font-medium text-zinc-700 dark:text-zinc-300"
-              >
-                Email address
-              </label>
-              <input
-                id="email"
-                name="email"
-                type="email"
-                autoComplete="email"
-                placeholder="name@example.com"
-                required
-                className="w-full rounded-xl border border-zinc-300/80 bg-transparent px-3.5 py-2 text-sm text-zinc-900 outline-none transition-all placeholder:text-zinc-400 focus:border-zinc-500 focus:ring-2 focus:ring-zinc-400/20 dark:border-zinc-700 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
-              />
-            </div>
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20 dark:bg-amber-950/40 dark:text-amber-300">
+            Pendaftaran Sementara Ditutup
+          </span>
 
-            <div className="flex flex-col gap-1.5">
-              <label 
-                htmlFor="password" 
-                className="text-xs font-medium text-zinc-700 dark:text-zinc-300"
-              >
-                Password
-              </label>
-              <input
-                id="password"
-                name="password"
-                type="password"
-                autoComplete="new-password"
-                placeholder="At least 6 characters"
-                required
-                minLength={6}
-                className="w-full rounded-xl border border-zinc-300/80 bg-transparent px-3.5 py-2 text-sm text-zinc-900 outline-none transition-all placeholder:text-zinc-400 focus:border-zinc-500 focus:ring-2 focus:ring-zinc-400/20 dark:border-zinc-700 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
-              />
-            </div>
+          <h2 className="mt-3 text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+            Registrasi Akun Baru Dinonaktifkan
+          </h2>
 
-            <button
-              type="submit"
-              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-900 py-2.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-black active:scale-[0.99] dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 cursor-pointer"
+          <p className="mt-2 text-xs leading-relaxed text-zinc-600 dark:text-zinc-400">
+            Mohon maaf atas ketidaknyamanannya. Pendaftaran akun baru di ChatLabs.id saat ini sedang ditutup sementara untuk peningkatan infrastruktur dan pemeliharaan sistem.
+          </p>
+
+          <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+            Bagi Anda yang sudah memiliki akun, Anda tetap dapat masuk dan mengakses seluruh fitur seperti biasa.
+          </p>
+
+          <div className="mt-6 flex flex-col gap-2.5">
+            <Link
+              href="/login"
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-900 py-2.5 text-xs font-semibold text-white shadow-sm transition-all hover:bg-black active:scale-[0.99] dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 cursor-pointer"
             >
-              <span>Create account</span>
+              <span>Masuk ke Akun Anda</span>
               <ArrowRight size={14} />
-            </button>
-          </form>
+            </Link>
+
+            <Link
+              href="/"
+              className="flex w-full items-center justify-center gap-2 rounded-xl border border-zinc-200/80 py-2.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:border-zinc-700/80 dark:text-zinc-300 dark:hover:bg-zinc-800/60 cursor-pointer"
+            >
+              <ArrowLeft size={14} />
+              <span>Kembali ke Beranda</span>
+            </Link>
+          </div>
         </div>
 
         {/* Footer Navigation */}
-        <div className="mt-5 text-center text-xs text-zinc-500 dark:text-zinc-400">
-          Already have an account?{' '}
+        <div className="mt-6 text-center text-xs text-zinc-500 dark:text-zinc-400">
+          Sudah memiliki akun terdaftar?{' '}
           <Link 
             href="/login" 
             className="font-medium text-zinc-900 hover:underline dark:text-zinc-200"
           >
-            Sign in
+            Login di sini
           </Link>
         </div>
       </div>

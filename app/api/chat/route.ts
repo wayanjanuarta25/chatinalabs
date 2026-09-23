@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { 
   fetchConversationMessages, 
   saveSupabaseMessage, 
@@ -19,7 +20,9 @@ import {
   generateImageBuffer,
   persistGeneratedImageAttachment,
   createStreamFromText,
-  createReadableStream
+  createReadableStream,
+  processDocumentAttachments,
+  buildDocumentContextBlock
 } from '@/lib/ai'
 import { ragService, RAGSourceCitation, DEFAULT_RAG_SYSTEM_PROMPT } from '@/lib/knowledge/rag'
 
@@ -212,7 +215,9 @@ export async function POST(req: Request) {
     }
 
     // 2. Fetch recent conversation history for context & build multimodal messages
-    const dbMessages = await fetchConversationMessages(supabase, conversationId)
+    // Use admin client to reliably join message_attachments without RLS nested filter drops
+    const adminSupabase = createAdminClient()
+    const dbMessages = await fetchConversationMessages(adminSupabase, conversationId)
     const MAX_CONTEXT = 20
     const recentDbMessages = dbMessages.slice(-MAX_CONTEXT)
 
@@ -222,10 +227,27 @@ export async function POST(req: Request) {
     for (let i = 0; i < recentDbMessages.length; i++) {
       const m = recentDbMessages[i]
       const hasImages = m.role === 'user' && m.message_attachments && m.message_attachments.some(a => a.attachment_type === 'image')
-      const isRecentTurn = i >= recentDbMessages.length - 4
+      const hasDocs = m.role === 'user' && m.message_attachments && m.message_attachments.some(a => a.attachment_type === 'document')
+      const isRecentTurn = i >= recentDbMessages.length - 10
+
+      let messageText = m.content
+
+      // If message has document attachments, extract their text content and append context block
+      if (hasDocs && isRecentTurn && m.message_attachments) {
+        try {
+          const docs = await processDocumentAttachments(m.message_attachments)
+          if (docs.length > 0) {
+            console.log(`[API/Chat] Successfully extracted ${docs.length} document(s) for message ${m.id}`)
+            const docContext = buildDocumentContextBlock(docs)
+            messageText = messageText ? `${messageText}\n\n${docContext}` : docContext
+          }
+        } catch (docErr) {
+          console.warn('[API/Chat] Failed processing document attachments:', docErr)
+        }
+      }
 
       if (hasImages && isRecentTurn) {
-        const multimodalContent = await buildMultimodalMessageContent(m.content, m.message_attachments)
+        const multimodalContent = await buildMultimodalMessageContent(messageText, m.message_attachments)
         contextMessages.push({
           role: m.role as 'system' | 'user' | 'assistant',
           content: multimodalContent,
@@ -238,14 +260,24 @@ export async function POST(req: Request) {
       } else {
         contextMessages.push({
           role: m.role as 'system' | 'user' | 'assistant',
-          content: m.content,
+          content: messageText,
         })
       }
     }
 
-    // If regenerating, remove trailing assistant response from context so AI generates a fresh reply
-    if (isRegenerate && contextMessages.length > 0 && contextMessages[contextMessages.length - 1].role === 'assistant') {
-      contextMessages = contextMessages.slice(0, -1)
+    // If regenerating, remove trailing assistant response from DB and context so AI generates a fresh reply
+    if (isRegenerate) {
+      if (contextMessages.length > 0 && contextMessages[contextMessages.length - 1].role === 'assistant') {
+        contextMessages = contextMessages.slice(0, -1)
+      }
+      try {
+        const lastAssistantMsg = [...recentDbMessages].reverse().find(m => m.role === 'assistant')
+        if (lastAssistantMsg) {
+          await supabase.from('messages').delete().eq('id', lastAssistantMsg.id)
+        }
+      } catch (err) {
+        console.warn('[API/Chat] Failed cleaning up old assistant message during regenerate:', err)
+      }
     }
 
     // Fallback if client passed raw messages array and db query returned empty
@@ -259,11 +291,16 @@ export async function POST(req: Request) {
     }
 
     // 3. RAG Layer: Retrieve knowledge from workspace documents and augment prompt
+    // Skip workspace RAG search if user already attached specific documents to this conversation
+    const hasDocAttachmentsInTurn = recentDbMessages.some(
+      m => m.role === 'user' && m.message_attachments?.some(a => a.attachment_type === 'document')
+    )
+
     let ragSources: RAGSourceCitation[] = []
     let hasKnowledge = false
     let messagesToSend = contextMessages
 
-    if (isKnowledgeEnabled && content && workspaceId) {
+    if (!hasDocAttachmentsInTurn && isKnowledgeEnabled && content && workspaceId) {
       const ragResult = await ragService.prepareRAGChat(supabase, {
         workspaceId,
         query: content,
@@ -347,10 +384,8 @@ export async function POST(req: Request) {
 
           if (done) {
             req.signal.removeEventListener('abort', abortHandler)
-            controller.close()
-            console.log('[CHAT] Generation completed')
 
-            // Save assistant final response
+            // Save assistant final response BEFORE closing stream to prevent client sync race conditions
             if (!hasSavedAssistantMessage && fullAssistantText.trim().length > 0) {
               hasSavedAssistantMessage = true
               let assistantStatus = 'completed'
@@ -386,29 +421,31 @@ export async function POST(req: Request) {
 
               // Background auto-title generation if new chat
               if (conversation.title === 'New Chat' || conversation.title === 'New Conversation') {
-                try {
-                  const titleResp = await aiService.generate({
-                    model: selectedModel,
-                    messages: [
-                      {
-                        role: 'system',
-                        content: 'You are a concise title generator. Summarize the user message in 3 to 6 words. Do not use quotes, punctuation, or periods.',
-                      },
-                      {
-                        role: 'user',
-                        content: content || fullAssistantText.slice(0, 100),
-                      },
-                    ],
-                  })
+                aiService.generate({
+                  model: selectedModel,
+                  messages: [
+                    {
+                      role: 'system',
+                      content: 'You are a concise title generator. Summarize the user message in 3 to 6 words. Do not use quotes, punctuation, or periods.',
+                    },
+                    {
+                      role: 'user',
+                      content: content || fullAssistantText.slice(0, 100),
+                    },
+                  ],
+                }).then(async titleResp => {
                   const cleanTitle = titleResp.content.trim().replace(/^["']|["']$/g, '')
                   if (cleanTitle) {
                     await updateSupabaseConversation(supabase, conversationId, { title: cleanTitle })
                   }
-                } catch (titleErr) {
+                }).catch(titleErr => {
                   console.warn('[AutoTitle] Generation failed:', titleErr)
-                }
+                })
               }
             }
+
+            console.log('[CHAT] Generation completed')
+            controller.close()
           } else if (value) {
             if (value.delta) {
               fullAssistantText += value.delta

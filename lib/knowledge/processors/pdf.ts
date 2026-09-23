@@ -10,35 +10,30 @@ export class PdfExtractor implements DocumentExtractor {
     try {
       // Dynamic require to prevent bundling issues with Next.js edge or client
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const pdfParseModule = require('pdf-parse')
+      let pdfParseFn: any
+      try {
+        pdfParseFn = require('pdf-parse/lib/pdf-parse.js')
+      } catch {
+        pdfParseFn = require('pdf-parse')
+      }
+
+      if (pdfParseFn?.default && typeof pdfParseFn.default === 'function') {
+        pdfParseFn = pdfParseFn.default
+      }
 
       let extractedText = ''
       let pageCount = 1
 
-      if (pdfParseModule.PDFParse) {
-        // pdf-parse v2+ API
-        const parser = new pdfParseModule.PDFParse({ data: buffer })
+      if (typeof pdfParseFn === 'function') {
+        const data = await pdfParseFn(buffer)
+        extractedText = data.text || ''
+        pageCount = data.numpages || 1
+      } else if (pdfParseFn?.PDFParse) {
+        const parser = new pdfParseFn.PDFParse({ data: buffer })
         const result = await parser.getText()
         pageCount = result.total || result.pages?.length || 1
         extractedText = typeof result.text === 'string' ? result.text : ''
         await parser.destroy()
-      } else if (typeof pdfParseModule === 'function') {
-        // pdf-parse v1 API
-        const data = await pdfParseModule(buffer)
-        extractedText = data.text || ''
-        pageCount = data.numpages || 1
-      } else if (pdfParseModule.default) {
-        if (typeof pdfParseModule.default === 'function') {
-          const data = await pdfParseModule.default(buffer)
-          extractedText = data.text || ''
-          pageCount = data.numpages || 1
-        } else if (pdfParseModule.default.PDFParse) {
-          const parser = new pdfParseModule.default.PDFParse({ data: buffer })
-          const result = await parser.getText()
-          pageCount = result.total || result.pages?.length || 1
-          extractedText = typeof result.text === 'string' ? result.text : ''
-          await parser.destroy()
-        }
       }
 
       const cleanedText = this.cleanPdfText(extractedText)

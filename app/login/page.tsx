@@ -94,13 +94,9 @@ export default async function LoginPage({
 
         {/* Footer Navigation */}
         <div className="mt-5 text-center text-xs text-zinc-500 dark:text-zinc-400">
-          Don&apos;t have an account?{' '}
-          <Link 
-            href="/register" 
-            className="font-medium text-zinc-900 hover:underline dark:text-zinc-200"
-          >
-            Sign up
-          </Link>
+          <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-3 py-1 text-[11px] text-zinc-500 dark:bg-zinc-800/80 dark:text-zinc-400">
+            Pendaftaran akun baru sedang dinonaktifkan sementara
+          </span>
         </div>
       </div>
     </div>

@@ -89,10 +89,10 @@ export function HowItWorks() {
         {/* Action Link */}
         <div className="mt-12 text-center">
           <Link
-            href="/register"
+            href="/login"
             className="inline-flex items-center gap-2 rounded-2xl bg-zinc-900 px-6 py-3 text-xs sm:text-sm font-semibold text-white shadow-sm transition-all hover:bg-black active:scale-[0.98] dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100 cursor-pointer"
           >
-            <span>Daftar Sekarang & Coba Gratis</span>
+            <span>Masuk ke ChatLabs</span>
             <ArrowRight size={14} />
           </Link>
         </div>

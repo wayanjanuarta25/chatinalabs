@@ -117,9 +117,17 @@ async function syncConversationFromDatabase(conversationId: string, set: (fn: (s
         attachments: (m.message_attachments as unknown as import('./dummyData').MessageAttachment[]) || undefined,
       }))
       set(state => ({
-        conversations: state.conversations.map(c => 
-          c.id === conversationId ? { ...c, messages: mapped } : c
-        )
+        conversations: state.conversations.map(c => {
+          if (c.id !== conversationId) return c
+          // Protection against stale overwrite:
+          // If database returns fewer messages than local state, preserve local messages not yet in DB
+          if (c.messages.length > mapped.length) {
+            const mappedIds = new Set(mapped.map(m => m.id))
+            const missingLocal = c.messages.filter(m => !mappedIds.has(m.id))
+            return { ...c, messages: [...mapped, ...missingLocal] }
+          }
+          return { ...c, messages: mapped }
+        })
       }))
     }
   } catch (err) {
@@ -228,9 +236,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }))
 
       set(state => ({
-        conversations: state.conversations.map(c => 
-          c.id === id ? { ...c, messages: mappedMessages } : c
-        ),
+        conversations: state.conversations.map(c => {
+          if (c.id !== id) return c
+          if (c.messages.length > mappedMessages.length) {
+            const mappedIds = new Set(mappedMessages.map(m => m.id))
+            const missingLocal = c.messages.filter(m => !mappedIds.has(m.id))
+            return { ...c, messages: [...mappedMessages, ...missingLocal] }
+          }
+          return { ...c, messages: mappedMessages }
+        }),
         isLoadingMessages: false,
       }))
     } catch (err) {
@@ -673,11 +687,23 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const precedingUserMsg = [...messages.slice(0, targetIndex)].reverse().find(m => m.role === 'user')
     if (!precedingUserMsg) return
 
+    const targetAssistantMsg = messages[targetIndex]
+
     // Remove old assistant message from state
     const trimmedMessages = [
       ...messages.slice(0, targetIndex),
       ...messages.slice(targetIndex + 1),
     ]
+
+    // Delete old assistant message from database to prevent stale duplicates on sync
+    if (targetAssistantMsg?.id) {
+      try {
+        const client = createClient()
+        client.from('messages').delete().eq('id', targetAssistantMsg.id).then()
+      } catch {
+        // ignore client init failure
+      }
+    }
 
     const targetConvId = active.id
     const currentModelId = get().selectedModel

@@ -113,46 +113,9 @@ export async function login(formData: FormData) {
   redirect('/chat')
 }
 
-export async function signup(formData: FormData) {
-  const supabase = await createClient()
-
-  const email = (formData.get('email') as string)?.trim()
-  const password = formData.get('password') as string
-  const fullName = (formData.get('fullName') as string)?.trim() || ''
-
-  if (!email || !password) {
-    redirect('/register?message=' + encodeURIComponent('Please fill in all required fields.'))
-  }
-
-  if (password.length < 6) {
-    redirect('/register?message=' + encodeURIComponent('Password must be at least 6 characters.'))
-  }
-
-  const { data, error } = await supabase.auth.signUp({
-    email,
-    password,
-    options: {
-      data: {
-        full_name: fullName,
-      },
-    },
-  })
-
-  if (error) {
-    redirect('/register?message=' + encodeURIComponent(error.message))
-  }
-
-  if (data.user) {
-    console.log('[AUTH] Signup created user.id:', data.user.id)
-    // The database trigger `on_auth_user_created` automatically provisions profile, personal workspace, and owner membership.
-  }
-
-  if (data.session) {
-    revalidatePath('/', 'layout')
-    redirect('/chat')
-  } else {
-    redirect('/login?message=' + encodeURIComponent('Account created successfully! Please sign in with your credentials.'))
-  }
+export async function signup(formData?: FormData) {
+  // Pendaftaran dinonaktifkan untuk sementara
+  redirect('/register?message=' + encodeURIComponent('Pendaftaran akun baru sedang dinonaktifkan untuk sementara. Silakan masuk jika Anda sudah memiliki akun.'))
 }
 
 export async function signout() {
