@@ -7,12 +7,10 @@ import {
   Square,
   AlertCircle,
   X,
-  Mic,
-  Sparkles
+  Mic
 } from 'lucide-react'
 import { AttachmentPicker } from './AttachmentPicker'
 import { AttachmentPreview, PendingAttachment } from './AttachmentPreview'
-import { UploadProgress } from './UploadProgress'
 import { ModelSelectorDropdown } from './ModelSelectorDropdown'
 import { validateAttachment } from '@/lib/attachments/validation'
 
@@ -123,15 +121,26 @@ export function MessageInput({
 
     if ((trimmed || filesToSend.length > 0) && !isLoading && !disabled) {
       setValidationError(null)
+
+      // 1. Ambil text input (trimmed)
+      // 2. Clear textarea seketika
+      setContent('')
+      // 3. Reset tinggi textarea seketika
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto'
+      }
+
       if (filesToSend.length > 0) {
         setPendingAttachments(prev => prev.map(p => ({ ...p, status: 'uploading' })))
       }
 
       try {
+        // 4. & 5. Render user message & jalankan sendMessage
         const result = await onSendMessage(trimmed, filesToSend.length > 0 ? filesToSend : undefined)
 
         if (result && typeof result === 'object' && result.success === false) {
-          // Upload or message creation failed: do not clear user content or files
+          // Upload or message creation failed: restore user content and show error
+          setContent(trimmed)
           setValidationError(result.error || 'Failed to upload attachment')
           setPendingAttachments(prev => prev.map(p => {
             if (!result.failedFileName || p.file.name === result.failedFileName) {
@@ -142,16 +151,14 @@ export function MessageInput({
           return
         }
 
-        // Success: clear composer state
-        setContent('')
+        // Success: clear composer attachments state
         setPendingAttachments([])
         setValidationError(null)
-        if (textareaRef.current) {
-          textareaRef.current.style.height = 'auto'
-        }
-      } catch (err: any) {
-        setValidationError(err?.message || 'Failed to upload attachment')
-        setPendingAttachments(prev => prev.map(p => ({ ...p, status: 'error', errorMessage: err?.message || 'Upload failed' })))
+      } catch (err: unknown) {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to send message'
+        setContent(trimmed)
+        setValidationError(errorMsg)
+        setPendingAttachments(prev => prev.map(p => ({ ...p, status: 'error', errorMessage: errorMsg })))
       }
     }
   }

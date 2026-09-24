@@ -89,11 +89,17 @@ export function ConversationList({ onSelect }: ConversationListProps) {
     }
   }, [activeMenuId, isChatsMenuOpen])
 
+  // Filter: hanya tampilkan chat yang sudah memiliki aktivitas pesan (bukan chat kosong)
+  const visibleConversations = conversations.filter(chat => {
+    const count = chat.messageCount ?? chat.messages.length
+    return count > 0
+  })
+
   // Group conversations by category
   const groups: { key: string; label: string; items: typeof conversations }[] = [
-    { key: 'Today', label: 'Today', items: conversations.filter(c => c.category === 'Today') },
-    { key: 'Yesterday', label: 'Yesterday', items: conversations.filter(c => c.category === 'Yesterday') },
-    { key: 'Previous 7 Days', label: 'Previous 7 days', items: conversations.filter(c => c.category === 'Previous 7 Days') },
+    { key: 'Today', label: 'Today', items: visibleConversations.filter(c => c.category === 'Today') },
+    { key: 'Yesterday', label: 'Yesterday', items: visibleConversations.filter(c => c.category === 'Yesterday') },
+    { key: 'Previous 7 Days', label: 'Previous 7 days', items: visibleConversations.filter(c => c.category === 'Previous 7 Days') },
   ]
 
   const handleRenameSubmit = (id: string, e?: React.FormEvent) => {

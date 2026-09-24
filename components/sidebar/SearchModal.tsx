@@ -34,9 +34,10 @@ export function SearchModal() {
   }
 
   const filteredResults = useMemo(() => {
-    if (!query.trim()) return conversations.slice(0, 5)
+    const activeConvs = conversations.filter(c => (c.messageCount ?? c.messages.length) > 0)
+    if (!query.trim()) return activeConvs.slice(0, 5)
     const q = query.toLowerCase()
-    return conversations.filter(c => {
+    return activeConvs.filter(c => {
       const matchTitle = c.title.toLowerCase().includes(q)
       const matchMessage = c.messages.some(m => m.content.toLowerCase().includes(q))
       return matchTitle || matchMessage

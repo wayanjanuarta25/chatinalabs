@@ -37,6 +37,7 @@ export interface Conversation {
   updatedAt: string
   messages: Message[]
   modelId?: string
+  messageCount?: number
 }
 
 export interface ModelOption {

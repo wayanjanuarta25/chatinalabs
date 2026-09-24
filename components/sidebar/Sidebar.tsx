@@ -46,6 +46,7 @@ export function Sidebar({
   const { theme, setTheme, resolvedTheme } = useTheme()
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMounted(true)
   }, [])
 
@@ -135,11 +136,7 @@ export function Sidebar({
               {/* New Chat */}
               <button
                 type="button"
-                onClick={() => {
-                  createNewChat().then(() => {
-                    window.history.pushState(null, '', '/chat')
-                  })
-                }}
+                onClick={() => createNewChat()}
                 className="flex h-7 w-7 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-200/70 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-white/[0.08] dark:hover:text-zinc-100 cursor-pointer"
                 title="New Chat"
                 aria-label="New Chat"
@@ -318,11 +315,7 @@ export function Sidebar({
               {/* New Chat */}
               <button
                 type="button"
-                onClick={() => {
-                  createNewChat().then(() => {
-                    window.history.pushState(null, '', '/chat')
-                  })
-                }}
+                onClick={() => createNewChat()}
                 className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-[12px] font-normal text-zinc-700 hover:bg-zinc-200/60 hover:text-zinc-900 dark:text-zinc-200 dark:hover:bg-white/[0.06] dark:hover:text-white transition-colors cursor-pointer group"
                 title="New Chat"
               >

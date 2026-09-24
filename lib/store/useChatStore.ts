@@ -167,14 +167,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     try {
       const dbConversations = await fetchUserConversations(supabase)
       
-      const mapped: Conversation[] = dbConversations.map(c => ({
-        id: c.id,
-        title: c.title,
-        category: getCategoryFromDate(c.updated_at),
-        updatedAt: formatDisplayTime(c.updated_at),
-        modelId: c.model || AVAILABLE_MODELS[0].id,
-        messages: [],
-      }))
+      const mapped: Conversation[] = dbConversations.map(c => {
+        const count = (c as unknown as { messages?: { count: number }[] }).messages?.[0]?.count ?? 1
+        return {
+          id: c.id,
+          title: c.title,
+          category: getCategoryFromDate(c.updated_at),
+          updatedAt: formatDisplayTime(c.updated_at),
+          modelId: c.model || AVAILABLE_MODELS[0].id,
+          messages: [],
+          messageCount: count,
+        }
+      })
+
+      console.log('[SIDEBAR] Loaded conversations', mapped)
 
       set({ 
         conversations: mapped,
@@ -259,52 +265,25 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       streamingTimer = null
     }
 
-    const supabase = createClient()
-    try {
-      // Create conversation row in Supabase
-      const newConv = await createSupabaseConversation(supabase, 'New Chat', 'chatINALabs AI')
-      
-      if (newConv) {
-        const mappedConv: Conversation = {
-          id: newConv.id,
-          title: newConv.title,
-          category: 'Today',
-          updatedAt: formatDisplayTime(newConv.updated_at),
-          modelId: newConv.model || AVAILABLE_MODELS[0].id,
-          messages: [],
-        }
+    const { abortController } = get()
+    if (abortController) {
+      abortController.abort()
+    }
 
-        set(state => ({
-          conversations: [mappedConv, ...state.conversations.filter(c => c.id !== newConv.id)],
-          activeConversationId: newConv.id,
-          selectedModel: AVAILABLE_MODELS[0].id,
-          chatState: 'idle',
-          streamingContent: '',
-          isModelSelectorOpen: false,
-        }))
+    // Reset frontend state only, do not insert into Supabase
+    set({
+      activeConversationId: null,
+      selectedModel: AVAILABLE_MODELS[0].id,
+      chatState: 'idle',
+      streamingContent: '',
+      abortController: null,
+      isGenerating: false,
+      isModelSelectorOpen: false,
+      error: null,
+    })
 
-        if (typeof window !== 'undefined') {
-          window.history.pushState(null, '', `/chat/${newConv.id}`)
-        }
-      } else {
-        // Local fallback if offline or db error
-        set({
-          activeConversationId: null,
-          selectedModel: AVAILABLE_MODELS[0].id,
-          chatState: 'idle',
-          streamingContent: '',
-          isModelSelectorOpen: false,
-        })
-      }
-    } catch (err) {
-      console.error('Error in createNewChat:', err)
-      set({
-        activeConversationId: null,
-        selectedModel: AVAILABLE_MODELS[0].id,
-        chatState: 'idle',
-        streamingContent: '',
-        isModelSelectorOpen: false,
-      })
+    if (typeof window !== 'undefined') {
+      window.history.pushState(null, '', '/chat')
     }
   },
 
@@ -364,65 +343,97 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     if ((!trimmed && !hasFiles) || get().chatState === 'thinking' || get().chatState === 'streaming') return
 
     const supabase = createClient()
-    let currentConvId = get().activeConversationId
+    const currentConvId = get().activeConversationId
     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     const titleText = trimmed || (hasFiles && files![0] ? files![0].name : 'New Chat')
     const derivedTitle = titleText.length > 36 ? titleText.slice(0, 36) + '...' : titleText
 
-    // If starting a fresh chat without prior row, create it in Supabase
-    if (!currentConvId) {
-      const newConv = await createSupabaseConversation(
-        supabase, 
-        derivedTitle, 
-        get().selectedModel
-      )
-      if (newConv) {
-        currentConvId = newConv.id
-        const newConversation: Conversation = {
-          id: newConv.id,
-          title: derivedTitle,
-          category: 'Today',
-          updatedAt: now,
-          messages: [],
-          modelId: get().selectedModel,
-        }
-        set(state => ({
-          conversations: [newConversation, ...state.conversations],
-          activeConversationId: currentConvId,
-        }))
-        if (typeof window !== 'undefined') {
-          window.history.pushState(null, '', `/chat/${currentConvId}`)
-        }
-      } else {
-        // Fallback local ID
-        currentConvId = `conv-${Date.now()}`
-        const newConversation: Conversation = {
-          id: currentConvId,
-          title: derivedTitle,
-          category: 'Today',
-          updatedAt: now,
-          messages: [],
-          modelId: get().selectedModel,
-        }
-        set(state => ({
-          conversations: [newConversation, ...state.conversations],
-          activeConversationId: currentConvId,
-        }))
-      }
+    const isFirstMessage = !currentConvId
+    const targetConvId: string = currentConvId || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `conv-${Date.now()}`)
+
+    if (isFirstMessage) {
+      console.log('[CHAT] First message trigger', {
+        conversationId: targetConvId,
+        content: trimmed || (hasFiles ? `[Attachment: ${files![0].name}]` : '')
+      })
     } else {
       // If conversation title is still 'New Chat', update it to the first prompt
       const currentConv = get().getActiveConversation()
       if (currentConv?.title === 'New Chat') {
-        get().renameConversation(currentConvId, derivedTitle)
+        get().renameConversation(targetConvId, derivedTitle)
       }
     }
 
-    const targetConvId = currentConvId
     const userMessageId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `msg-u-${Date.now()}`
     const finalContent = trimmed || (hasFiles ? `[Lampiran: ${files!.map(f => f.name).join(', ')}]` : '')
 
+    const userMessage: Message = {
+      id: userMessageId,
+      role: 'user',
+      content: finalContent,
+      createdAt: now,
+      attachments: undefined,
+    }
+
+    const controller = new AbortController()
+    console.log(`[CHAT] Generation started\nconversation.id:\n${targetConvId}`)
+
+    if (isFirstMessage) {
+      // Requirement 2 & 4: Optimistically render conversation and user message immediately
+      const newConversation: Conversation = {
+        id: targetConvId,
+        title: derivedTitle,
+        category: 'Today',
+        updatedAt: now,
+        messages: [userMessage],
+        modelId: get().selectedModel,
+        messageCount: 1,
+      }
+
+      set(state => ({
+        conversations: [newConversation, ...state.conversations.filter(c => c.id !== targetConvId)],
+        activeConversationId: targetConvId,
+        chatState: 'thinking',
+        streamingContent: '',
+        abortController: controller,
+        isGenerating: true,
+        error: null,
+        lastFailedMessage: null,
+      }))
+
+      if (typeof window !== 'undefined') {
+        window.history.pushState(null, '', `/chat/${targetConvId}`)
+      }
+
+      // Persist the new conversation in Supabase
+      const createdConv = await createSupabaseConversation(
+        supabase,
+        derivedTitle,
+        get().selectedModel,
+        targetConvId
+      )
+      if (!createdConv) {
+        console.error('[CHAT] Failed to persist new conversation to Supabase:', targetConvId)
+      }
+    } else {
+      // Optimistically append user message & enter thinking state
+      set(state => ({
+        conversations: state.conversations.map(c => 
+          c.id === targetConvId 
+            ? { ...c, updatedAt: now, messages: [...c.messages, userMessage], messageCount: (c.messageCount ?? c.messages.length) + 1 }
+            : c
+        ),
+        chatState: 'thinking',
+        streamingContent: '',
+        abortController: controller,
+        isGenerating: true,
+        error: null,
+        lastFailedMessage: null,
+      }))
+    }
+
     // Step A: If attachments present, save user message first and upload files
-    let uploadedAttachments: MessageAttachment[] = []
+    const uploadedAttachments: MessageAttachment[] = []
     if (hasFiles) {
       const savedUserMsg = await saveSupabaseMessage(
         supabase,
@@ -463,11 +474,25 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           // Rollback: Delete message from Supabase (cascades to delete any partial attachment records)
           await supabase.from('messages').delete().eq('id', userMessageId)
 
-          set({
-            error: uploadErr,
-            chatState: 'idle',
-            isGenerating: false,
-          })
+          if (isFirstMessage) {
+            // Roll back temporary conversation if initial upload fails
+            set(state => ({
+              conversations: state.conversations.filter(c => c.id !== targetConvId),
+              activeConversationId: null,
+              error: uploadErr,
+              chatState: 'idle',
+              isGenerating: false,
+            }))
+            if (typeof window !== 'undefined') {
+              window.history.pushState(null, '', '/chat')
+            }
+          } else {
+            set({
+              error: uploadErr,
+              chatState: 'idle',
+              isGenerating: false,
+            })
+          }
 
           return {
             success: false,
@@ -476,33 +501,21 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           }
         }
       }
+
+      // Update local message attachments
+      set(state => ({
+        conversations: state.conversations.map(c => 
+          c.id === targetConvId
+            ? {
+                ...c,
+                messages: c.messages.map(m => 
+                  m.id === userMessageId ? { ...m, attachments: uploadedAttachments } : m
+                )
+              }
+            : c
+        )
+      }))
     }
-
-    const userMessage: Message = {
-      id: userMessageId,
-      role: 'user',
-      content: finalContent,
-      createdAt: now,
-      attachments: uploadedAttachments.length > 0 ? uploadedAttachments : undefined,
-    }
-
-    const controller = new AbortController()
-    console.log(`[CHAT] Generation started\nconversation.id:\n${targetConvId}`)
-
-    // Optimistically append user message & enter thinking state
-    set(state => ({
-      conversations: state.conversations.map(c => 
-        c.id === currentConvId 
-          ? { ...c, updatedAt: now, messages: [...c.messages, userMessage] }
-          : c
-      ),
-      chatState: 'thinking',
-      streamingContent: '',
-      abortController: controller,
-      isGenerating: true,
-      error: null,
-      lastFailedMessage: null,
-    }))
 
     const currentModelId = get().selectedModel
 
@@ -578,7 +591,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const isAbort =
         (err instanceof DOMException && err.name === 'AbortError') ||
         (err instanceof Error && err.name === 'AbortError') ||
-        (err as any)?.name === 'AbortError' ||
+        (err as { name?: string })?.name === 'AbortError' ||
         controller.signal.aborted
 
       if (isAbort) {
@@ -792,7 +805,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const isAbort =
         (err instanceof DOMException && err.name === 'AbortError') ||
         (err instanceof Error && err.name === 'AbortError') ||
-        (err as any)?.name === 'AbortError' ||
+        (err as { name?: string })?.name === 'AbortError' ||
         controller.signal.aborted
 
       if (isAbort) {
@@ -1107,7 +1120,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const isAbort =
         (err instanceof DOMException && err.name === 'AbortError') ||
         (err instanceof Error && err.name === 'AbortError') ||
-        (err as any)?.name === 'AbortError' ||
+        (err as { name?: string })?.name === 'AbortError' ||
         controller.signal.aborted
 
       if (isAbort) {

@@ -59,13 +59,14 @@ export async function getOrCreateUserWorkspace(
 
 /**
  * Fetch all conversations accessible to the current user, ordered by updated_at descending.
+ * Filters out conversations that have 0 messages (empty chats).
  */
 export async function fetchUserConversations(
   supabase: SupabaseClient<Database>
 ): Promise<DBConversation[]> {
   const { data, error } = await supabase
     .from('conversations')
-    .select('*')
+    .select('*, messages(count)')
     .order('updated_at', { ascending: false })
 
   if (error) {
@@ -73,7 +74,14 @@ export async function fetchUserConversations(
     return []
   }
 
-  return data || []
+  // Filter out conversations that have 0 messages (empty chats that were never started)
+  const activeConversations = (data || []).filter(c => {
+    const messagesCountArray = (c as unknown as { messages?: { count: number }[] }).messages
+    const count = messagesCountArray && messagesCountArray.length > 0 ? messagesCountArray[0].count : 0
+    return count > 0
+  })
+
+  return activeConversations as unknown as DBConversation[]
 }
 
 export type DBMessageWithAttachments = DBMessage & {
@@ -104,11 +112,13 @@ export async function fetchConversationMessages(
 /**
  * Create a new conversation row in Supabase.
  * Verifies authenticated user and active workspace before inserting.
+ * Supports optional predefined conversation ID for optimistic UI.
  */
 export async function createSupabaseConversation(
   supabase: SupabaseClient<Database>,
   title: string = 'New Chat',
-  model: string = 'chatINALabs AI'
+  model: string = 'chatINALabs AI',
+  id?: string
 ): Promise<DBConversation | null> {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) {
@@ -122,16 +132,20 @@ export async function createSupabaseConversation(
     return null
   }
 
+  console.log('[CHAT] Creating conversation', id || '(new generated)')
   console.log('[AUTH] Creating conversation. user.id:', user.id, 'workspace.id:', workspaceId)
+
+  const insertPayload: Database['public']['Tables']['conversations']['Insert'] = {
+    workspace_id: workspaceId,
+    user_id: user.id,
+    title: title.trim() || 'New Chat',
+    model: model || 'chatINALabs AI',
+    ...(id ? { id } : {}),
+  }
 
   const { data, error } = await supabase
     .from('conversations')
-    .insert({
-      workspace_id: workspaceId,
-      user_id: user.id,
-      title: title.trim() || 'New Chat',
-      model: model || 'chatINALabs AI',
-    })
+    .insert(insertPayload)
     .select()
     .single()
 
